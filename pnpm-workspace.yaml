@@ -1,6 +1,7 @@
 # pnpm settings, not a workspace definition. This is a single-package repo.
 # npm and yarn ignore this file; it only configures pnpm, so do not delete it
-# if you use pnpm. The same settings work in the "pnpm" key of package.json.
+# if you use pnpm. Since pnpm 10 these settings are read from here only, not
+# from a "pnpm" key in package.json.
 allowBuilds:
   '@google/genai': true
   esbuild: true
