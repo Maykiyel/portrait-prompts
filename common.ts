@@ -1,13 +1,9 @@
-import "dotenv/config";
 import { existsSync, mkdirSync, readFileSync, appendFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import sharp from "sharp";
 import { ArchiveError } from "./errors";
 
 export const pad = (n: number) => String(n).padStart(5, "0");
-
-/** Optional private text mixed into every seed so your prompts differ from other users'. */
-export const currentSalt = () => (process.env.SEED_SALT ?? "").trim();
 
 export function loadTemplate() {
   const raw = readFileSync("template.txt", "utf8");
@@ -83,12 +79,12 @@ const wouldBlockRename = (err: unknown) =>
  * Written to a temporary file and renamed into place, so a reader running at the
  * same time sees either the old counter or the new one, never half of either.
  */
-function writeCursor(outDir: string, next: number) {
+function writeCursor(outDir: string, next: number, salt: string) {
   mkdirSync(outDir, { recursive: true });
   const dest = cursorFile(outDir);
   const tmp = `${dest}.${process.pid}.tmp`;
   try {
-    writeFileSync(tmp, JSON.stringify({ next, salt: currentSalt() }));
+    writeFileSync(tmp, JSON.stringify({ next, salt }));
     for (let attempt = 0; ; attempt++) {
       try {
         renameSync(tmp, dest);
@@ -107,11 +103,11 @@ const sleep = (ms: number) => {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 };
 
-/** Stops the run if SEED_SALT differs from the one this output folder was started with. */
-export function assertSalt(outDir: string) {
+/** Stops the run if `salt` differs from the one this output folder was started with. */
+export function assertSalt(outDir: string, salt: string) {
   const recorded = readCursorState(outDir)?.salt;
   if (recorded === undefined) return; // no counter yet, nothing to protect
-  if (recorded !== currentSalt()) {
+  if (recorded !== salt) {
     throw new Error(
       `SEED_SALT does not match ${outDir}/. It was started with ${recorded ? "a different salt" : "no salt"}, ` +
         `so the same seeds would now make different prompts. Restore the old SEED_SALT in .env, or move ${outDir}/ aside to start fresh.`,
@@ -131,20 +127,20 @@ export function pendingSeeds(outDir: string): number[] {
  * Returns `count` seeds. Pending ones come first, so failed or unimported seeds get
  * finished before new ones are used. Pass commit=false to preview without advancing.
  */
-export function claimSeeds(outDir: string, count: number, commit = true): number[] {
-  assertSalt(outDir);
+export function claimSeeds(outDir: string, salt: string, count: number, commit = true): number[] {
+  assertSalt(outDir, salt);
   const pending = pendingSeeds(outDir).slice(0, count);
   const next = readCursor(outDir);
   const fresh = count - pending.length;
   const seeds = [...pending, ...Array.from({ length: fresh }, (_, i) => next + i)];
-  if (commit && fresh > 0) writeCursor(outDir, next + fresh);
+  if (commit && fresh > 0) writeCursor(outDir, next + fresh, salt);
   return seeds;
 }
 
 /** Hands out `count` brand new seeds, skipping any that are still waiting. */
-export function issueSeeds(outDir: string, count: number): number[] {
-  assertSalt(outDir);
+export function issueSeeds(outDir: string, salt: string, count: number): number[] {
+  assertSalt(outDir, salt);
   const next = readCursor(outDir);
-  writeCursor(outDir, next + count);
+  writeCursor(outDir, next + count, salt);
   return Array.from({ length: count }, (_, i) => next + i);
 }

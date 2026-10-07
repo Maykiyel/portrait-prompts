@@ -1,8 +1,9 @@
+import "dotenv/config";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
 import sharp from "sharp";
 import { buildPrompt } from "./sampler";
-import { assertSalt, currentSalt, loadTemplate, logManifest, pad, pendingSeeds, saveImage } from "./common";
+import { assertSalt, loadTemplate, logManifest, pad, pendingSeeds, saveImage } from "./common";
 
 export type ImportOptions = {
   inDir: string;
@@ -12,12 +13,13 @@ export type ImportOptions = {
   width: number;
   height: number;
   dryRun: boolean;
+  salt: string;
 };
 
 const EXT = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 
 export async function importImages(o: ImportOptions) {
-  assertSalt(o.outDir);
+  assertSalt(o.outDir, o.salt);
   const { version, template } = loadTemplate();
   const files = readdirSync(o.inDir)
     .filter((f) => EXT.has(extname(f).toLowerCase()))
@@ -55,8 +57,8 @@ export async function importImages(o: ImportOptions) {
     }
     await saveImage(readFileSync(src), seed, o);
     logManifest(o.outDir, {
-      seed, version, salt: currentSalt(), source: "manual", file: files[i],
-      prompt: buildPrompt(template, seed).trim(), status: "ok",
+      seed, version, salt: o.salt, source: "manual", file: files[i],
+      prompt: buildPrompt(template, seed, o.salt).trim(), status: "ok",
     });
     imported++;
   }
@@ -82,5 +84,6 @@ if (process.argv[1]?.endsWith("import-images.ts")) {
     width: 768,
     height: 1152,
     dryRun: process.argv.includes("--dry-run"),
+    salt: (process.env.SEED_SALT ?? "").trim(),
   });
 }
