@@ -1,7 +1,10 @@
 // Runs the pipeline with fake generators. No API key or network needed.
-import { mkdirSync, readdirSync, readFileSync, rmSync, utimesSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import sharp from "sharp";
-import { claimSeeds, loadTemplate, readCursor } from "./common";
+import { claimSeeds, issueSeeds, loadTemplate, readCursor } from "./common";
+import { ArchiveError } from "./errors";
 import { defaults, run } from "./generate";
 import { importImages } from "./import-images";
 import { buildPrompt, pools } from "./sampler";
@@ -64,6 +67,76 @@ try {
   threw = true;
 }
 results.push(check("import refuses images with no waiting seeds", threw));
+
+// Seed counter: a missing one is a fresh run, an unreadable one is refused.
+const counterDir = "out-smoke5";
+rmSync(counterDir, { recursive: true, force: true });
+mkdirSync(counterDir, { recursive: true });
+results.push(check("a folder with no counter reads as seed 1", readCursor(counterDir) === 1));
+results.push(check("a folder with no counter still hands out seed 1", claimSeeds(counterDir, 1).join() === "1"));
+writeFileSync(join(counterDir, "cursor.json"), "{ this is not json");
+const readCounter = (dir: string) => {
+  try {
+    readCursor(dir);
+    return "";
+  } catch (err) {
+    return err instanceof ArchiveError ? err.code : `not an ArchiveError: ${String(err)}`;
+  }
+};
+results.push(check("an unreadable counter is refused by code", readCounter(counterDir) === "unreadable-counter"));
+let claimedFromBroken: string;
+try {
+  claimedFromBroken = claimSeeds(counterDir, 1).join();
+} catch (err) {
+  claimedFromBroken = err instanceof ArchiveError ? err.code : `not an ArchiveError: ${String(err)}`;
+}
+results.push(check("the salt guard is not bypassed by a broken counter", claimedFromBroken === "unreadable-counter"));
+writeFileSync(join(counterDir, "cursor.json"), JSON.stringify({ next: "not a number" }));
+results.push(check("a counter with no usable next is refused", readCounter(counterDir) === "unreadable-counter"));
+// A reader running against a folder that is being written to must never see half a counter.
+// Two readers loop for three seconds while this process keeps handing out Seeds.
+const writerDir = "out-smoke6";
+rmSync(writerDir, { recursive: true, force: true });
+claimSeeds(writerDir, 1); // the counter now exists for the readers to race against
+const readers = [0, 1].map(() =>
+  execFile(process.execPath, [
+    "-e",
+    `const { readFileSync } = require("node:fs");
+     const file = process.argv[1];
+     let reads = 0, broken = 0;
+     const until = Date.now() + 3000;
+     while (Date.now() < until) {
+       reads++;
+       try {
+         const v = JSON.parse(readFileSync(file, "utf8"));
+         if (!Number.isInteger(v.next) || v.next < 1) broken++;
+       } catch {
+         broken++;
+       }
+     }
+     process.stdout.write(JSON.stringify({ reads, broken }));`,
+    join(writerDir, "cursor.json"),
+  ]),
+);
+const reports = Promise.all(
+  readers.map(
+    (r) =>
+      new Promise<{ reads: number; broken: number }>((resolve) => {
+        let text = "";
+        r.stdout?.on("data", (c: Buffer) => (text += c.toString()));
+        r.on("close", () => resolve(JSON.parse(text)));
+      }),
+  ),
+);
+const writingUntil = Date.now() + 2800;
+while (Date.now() < writingUntil) issueSeeds(writerDir, 1);
+const torn = await reports;
+results.push(check(
+  "a reader racing the writer never sees a partial counter",
+  torn.every((r) => r.reads > 1000 && r.broken === 0),
+));
+rmSync(writerDir, { recursive: true, force: true });
+rmSync(counterDir, { recursive: true, force: true });
 
 
 // Salt

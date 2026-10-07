@@ -1,7 +1,8 @@
 import "dotenv/config";
-import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, appendFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import sharp from "sharp";
+import { ArchiveError } from "./errors";
 
 export const pad = (n: number) => String(n).padStart(5, "0");
 
@@ -38,26 +39,78 @@ export function logManifest(outDir: string, row: Record<string, unknown>) {
 const cursorFile = (outDir: string) => join(outDir, "cursor.json");
 
 export function readCursor(outDir: string): number {
+  return readCursorState(outDir)?.next ?? 1;
+}
+
+/** The counter as stored, or undefined when this folder has never handed out a Seed. */
+function readCursorState(outDir: string): { next: number; salt: string } | undefined {
+  const file = cursorFile(outDir);
+  if (!existsSync(file)) return undefined;
+  let raw: string;
   try {
-    return Number(JSON.parse(readFileSync(cursorFile(outDir), "utf8")).next) || 1;
-  } catch {
-    return 1;
+    raw = readFileSync(file, "utf8");
+  } catch (err) {
+    throw unreadable(outDir, err);
+  }
+  let parsed: { next?: unknown; salt?: unknown };
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw unreadable(outDir, err);
+  }
+  const next = Number(parsed.next);
+  if (!Number.isInteger(next) || next < 1) {
+    throw unreadable(outDir, new Error(`next is ${String(parsed.next)}`));
+  }
+  return { next, salt: String(parsed.salt ?? "") };
+}
+
+/** I cannot read your state is not the same as you have no state, so it is an error. */
+function unreadable(outDir: string, cause: unknown): ArchiveError {
+  const why = cause instanceof Error ? cause.message : String(cause);
+  return new ArchiveError(
+    "unreadable-counter",
+    `Cannot read the Seed counter in ${outDir}/, so I cannot tell which Seeds were already handed out. ` +
+      `Fix or remove ${outDir}/cursor.json to continue. (${why})`,
+  );
+}
+
+/** Windows refuses the rename while another process has the counter open for reading. */
+const wouldBlockRename = (err: unknown) =>
+  ["EACCES", "EBUSY", "EPERM"].includes((err as NodeJS.ErrnoException).code ?? "");
+
+/**
+ * Written to a temporary file and renamed into place, so a reader running at the
+ * same time sees either the old counter or the new one, never half of either.
+ */
+function writeCursor(outDir: string, next: number) {
+  mkdirSync(outDir, { recursive: true });
+  const dest = cursorFile(outDir);
+  const tmp = `${dest}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify({ next, salt: currentSalt() }));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        renameSync(tmp, dest);
+        return;
+      } catch (err) {
+        if (attempt >= 200 || !wouldBlockRename(err)) throw err;
+        sleep(1);
+      }
+    }
+  } finally {
+    if (existsSync(tmp)) rmSync(tmp, { force: true });
   }
 }
 
-function writeCursor(outDir: string, next: number) {
-  mkdirSync(outDir, { recursive: true });
-  writeFileSync(cursorFile(outDir), JSON.stringify({ next, salt: currentSalt() }));
-}
+const sleep = (ms: number) => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
 
 /** Stops the run if SEED_SALT differs from the one this output folder was started with. */
 export function assertSalt(outDir: string) {
-  let recorded: string;
-  try {
-    recorded = String(JSON.parse(readFileSync(cursorFile(outDir), "utf8")).salt ?? "");
-  } catch {
-    return; // no counter yet, nothing to protect
-  }
+  const recorded = readCursorState(outDir)?.salt;
+  if (recorded === undefined) return; // no counter yet, nothing to protect
   if (recorded !== currentSalt()) {
     throw new Error(
       `SEED_SALT does not match ${outDir}/. It was started with ${recorded ? "a different salt" : "no salt"}, ` +
