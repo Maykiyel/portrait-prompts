@@ -1,0 +1,39 @@
+# Lint, type check, build and the offline smoke test on both supported Node
+# majors. The smoke test uses fake image generators, so this needs no API key
+# and no network beyond the install.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      # Report both Node majors rather than stopping at the first failure.
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          # package.json has no packageManager field on purpose, so the version
+          # has to be pinned here instead. Keep in step with your local pnpm.
+          version: 12.6.0
+          # Cache the pnpm store. action-setup owns this rather than setup-node,
+          # so the cache does not depend on step ordering.
+          cache: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm run build
+      - run: pnpm run smoke
