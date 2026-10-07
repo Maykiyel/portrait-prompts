@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "typescript",
+    "react",
+    "jsx-a11y",
+    "import"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2022": true
+  },
+  "ignorePatterns": [
+    "node_modules",
+    "web/dist",
+    "out",
+    "out-smoke*"
+  ],
+  "rules": {
+    "react/react-in-jsx-scope": "off",
+    "react/only-export-components": "off",
+    "import/no-unassigned-import": "off",
+    "import/no-named-as-default-member": "off"
+  }
+}

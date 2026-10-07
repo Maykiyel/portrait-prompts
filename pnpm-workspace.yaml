@@ -1,0 +1,6 @@
+allowBuilds:
+  '@google/genai': true
+  esbuild: true
+  protobufjs: true
+minimumReleaseAgeExclude:
+  - vite@8.3.3
