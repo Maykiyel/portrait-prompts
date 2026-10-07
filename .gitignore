@@ -5,7 +5,9 @@ out
 out-smoke*
 in-smoke
 prompts.html
-pnpm-lock.yaml
+# pnpm-lock.yaml is the committed lockfile. The others are ignored so that
+# npm and yarn users are free to install without touching the repo.
+package-lock.json
 yarn.lock
 .DS_Store
 Thumbs.db
