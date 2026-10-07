@@ -1,0 +1,102 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/hanken-grotesk";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Hanken Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-waiting: var(--waiting);
+  --color-done: var(--done);
+}
+
+/* Cool paper, ink text, one pine-teal accent. Amber marks work still waiting. */
+:root {
+  --radius: 0.5rem;
+  --background: oklch(0.985 0.003 240);
+  --foreground: oklch(0.21 0.02 255);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.02 255);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.02 255);
+  --primary: oklch(0.43 0.075 195);
+  --primary-foreground: oklch(0.985 0.003 195);
+  --secondary: oklch(0.955 0.005 240);
+  --secondary-foreground: oklch(0.28 0.02 255);
+  --muted: oklch(0.955 0.005 240);
+  --muted-foreground: oklch(0.5 0.02 255);
+  --accent: oklch(0.945 0.012 200);
+  --accent-foreground: oklch(0.3 0.04 200);
+  --destructive: oklch(0.55 0.2 27);
+  --border: oklch(0.91 0.006 240);
+  --input: oklch(0.88 0.008 240);
+  --ring: oklch(0.55 0.08 195);
+  --sidebar: oklch(0.965 0.005 240);
+  --waiting: oklch(0.72 0.14 75);
+  --done: oklch(0.55 0.1 175);
+}
+
+.dark {
+  --background: oklch(0.175 0.012 255);
+  --foreground: oklch(0.95 0.005 240);
+  --card: oklch(0.21 0.014 255);
+  --card-foreground: oklch(0.95 0.005 240);
+  --popover: oklch(0.21 0.014 255);
+  --popover-foreground: oklch(0.95 0.005 240);
+  --primary: oklch(0.74 0.1 190);
+  --primary-foreground: oklch(0.2 0.03 195);
+  --secondary: oklch(0.26 0.015 255);
+  --secondary-foreground: oklch(0.95 0.005 240);
+  --muted: oklch(0.26 0.015 255);
+  --muted-foreground: oklch(0.7 0.015 250);
+  --accent: oklch(0.29 0.03 200);
+  --accent-foreground: oklch(0.95 0.005 240);
+  --destructive: oklch(0.68 0.18 25);
+  --border: oklch(0.3 0.015 255);
+  --input: oklch(0.34 0.015 255);
+  --ring: oklch(0.65 0.08 190);
+  --sidebar: oklch(0.2 0.013 255);
+  --waiting: oklch(0.8 0.14 80);
+  --done: oklch(0.75 0.1 175);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
