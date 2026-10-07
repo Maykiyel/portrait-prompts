@@ -32,7 +32,7 @@ export async function importImages(o: ImportOptions) {
     seeds = pendingSeeds(o.outDir);
     if (files.length > seeds.length) {
       throw new Error(
-        `${files.length} images but only ${seeds.length} seeds waiting for one. Run "npm run prompts" first.`,
+        `${files.length} images but only ${seeds.length} seeds waiting for one. Run "prompts" first.`,
       );
     }
   }
@@ -72,7 +72,7 @@ function arg(name: string, fallback?: string) {
 if (process.argv[1]?.endsWith("import-images.ts")) {
   const inDir = arg("--in");
   if (!inDir) {
-    console.error('Usage: pnpm run import-images --in "<folder>" [--dry-run]');
+    console.error('Usage: import-images --in "<folder>" [--dry-run]');
     process.exit(1);
   }
   importImages({

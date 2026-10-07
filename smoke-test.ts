@@ -46,7 +46,7 @@ results.push(check("dry run leaves counter alone", readCursor(out) === 9));
 // Manual path with the counter
 const out2 = "out-smoke2";
 rmSync(out2, { recursive: true, force: true });
-claimSeeds(out2, 3); // what "npm run prompts" does
+claimSeeds(out2, 3); // what the prompts command does
 mkdirSync(inDir);
 for (const [i, name] of ["b.png", "a.png"].entries()) {
   const p = `${inDir}/${name}`;
