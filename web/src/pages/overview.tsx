@@ -7,18 +7,20 @@ import { PageHeader } from "@/components/page-header";
 import { QueryError } from "@/components/query-error";
 import { thumbUrl } from "@/lib/api";
 import { useAddPrompts, useImages, useStatus } from "@/lib/queries";
+import { useSettings } from "@/stores/settings";
 
 export function Overview() {
   const status = useStatus();
   const images = useImages();
   const addPrompts = useAddPrompts();
+  const includeNegative = useSettings((s) => s.includeNegative);
   const navigate = useNavigate();
 
   if (status.error) return <QueryError error={status.error} retry={() => void status.refetch()} />;
   if (!status.data) return <Skeleton className="h-64 w-full" />;
   const s = status.data;
 
-  const startBatch = () => addPrompts.mutate(10, { onSuccess: () => void navigate("/prompts") });
+  const startBatch = () => addPrompts.mutate({ count: 10, useNegative: includeNegative }, { onSuccess: () => void navigate("/prompts") });
 
   return (
     <>

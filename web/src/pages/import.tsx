@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { useImportQueue } from "@/stores/import-queue";
 
 export function ImportPage() {
-  const pending = usePending();
+  const pending = usePending(false);
   const importer = useImportImages();
   const addPrompts = useAddPrompts();
   const { rows, addFiles, autoAssign, setSeed, remove, clear } = useImportQueue();
@@ -94,7 +94,7 @@ export function ImportPage() {
           <AlertDescription>
             <p>Each image needs a prompt. Add prompts and they are matched automatically.</p>
             <div className="mt-1 flex gap-2">
-              <Button size="sm" variant="outline" className="text-foreground" disabled={addPrompts.isPending} onClick={() => addPrompts.mutate(unassigned)}>
+              <Button size="sm" variant="outline" className="text-foreground" disabled={addPrompts.isPending} onClick={() => addPrompts.mutate({ count: unassigned, useNegative: false })}>
                 Add {unassigned} {unassigned === 1 ? "prompt" : "prompts"}
               </Button>
               <Button size="sm" variant="ghost" asChild>

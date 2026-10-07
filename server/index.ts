@@ -29,10 +29,10 @@ const seedParam = (v: string) => {
 
 const api = new Hono();
 api.get("/status", (c) => c.json(getStatus(salt)));
-api.get("/prompts/pending", (c) => c.json(getPending(salt)));
+api.get("/prompts/pending", (c) => c.json(getPending(salt, c.req.query("useNegative") === "1")));
 api.post("/prompts/new", async (c) => {
-  const { count } = await c.req.json<{ count: number }>();
-  return c.json(addPrompts(count, salt));
+  const { count, useNegative } = await c.req.json<{ count: number; useNegative?: boolean }>();
+  return c.json(addPrompts(count, salt, useNegative === true));
 });
 
 api.get("/images", (c) => c.json(listImages()));

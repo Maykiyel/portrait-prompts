@@ -13,8 +13,6 @@ export type PromptItem = { seed: number; prompt: string };
 
 export type PromptsResponse = {
   items: PromptItem[];
-  negative: string;
-  prefix: string;
 };
 
 export type ImageItem = {
