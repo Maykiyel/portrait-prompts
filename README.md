@@ -9,10 +9,26 @@ Each portrait is a fictional adult with randomized age, background, face, hair, 
 ## Requirements
 
 - Node 20.19 or newer, or Node 22.12 or newer.
-- npm, pnpm or yarn. Examples use npm, which needs `--` before command line flags. pnpm and yarn also accept that form.
+- npm, pnpm or yarn. Any of them works, and nothing in the repo depends on one. See [Package managers](#package-managers).
 - A Gemini API key, only for the paid API route. The Gemini API has no free tier for image models.
 
+## Package managers
+
+Pick whichever you already use. There is no `packageManager` field in `package.json`, so corepack will not override your choice, and no script shells out to a specific package manager.
+
+| | install | a script | `build` |
+| --- | --- | --- | --- |
+| npm | `npm install` | `npm run prompts -- --count 20` | `npm run build` |
+| pnpm | `pnpm install` | `pnpm run prompts -- --count 20` | `pnpm run build` |
+| yarn | `yarn install` | `yarn run prompts --count 20` | `yarn build` |
+
+Two things differ. `pnpm-lock.yaml` is the committed lockfile, so `pnpm install` is the reproducible path; npm and yarn generate their own lockfile, and those are gitignored so your install never shows up as a change. Yarn also drops the `--` separator, npm and pnpm need it. `npm start` is `pnpm start` or `yarn start`, and `npm run <script>` is `pnpm run <script>` or `yarn run <script>` everywhere else.
+
+`pnpm-workspace.yaml` holds pnpm settings for a single-package repo. npm and yarn ignore it.
+
 ## Install and run
+
+Examples below use npm. Substitute your own, as above.
 
 ```bash
 npm install
