@@ -10,18 +10,18 @@ import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
 import { QueryError } from "@/components/query-error";
 import { useAddPrompts, usePending } from "@/lib/queries";
-import { copyText, promptForGemini, summarize } from "@/lib/text";
+import { copyText, summarize } from "@/lib/text";
 import { cn } from "@/lib/utils";
 import { useCopied } from "@/stores/copied";
 import { useSettings } from "@/stores/settings";
 
-function PromptRow({ seed, prompt, text }: { seed: number; prompt: string; text: string }) {
+function PromptRow({ seed, prompt }: { seed: number; prompt: string }) {
   const [open, setOpen] = useState(false);
   const wasCopied = useCopied((s) => s.copied[seed] === true);
   const mark = useCopied((s) => s.mark);
 
   const copy = async () => {
-    if (await copyText(text)) {
+    if (await copyText(prompt)) {
       mark(seed);
       toast.success(`Copied prompt ${seed}`);
     } else toast.error("The browser blocked copying. Select the text and copy it by hand.");
@@ -40,7 +40,7 @@ function PromptRow({ seed, prompt, text }: { seed: number; prompt: string; text:
         >
           {open ? "Hide full prompt" : "Show full prompt"}
         </button>
-        {open && <pre className="mt-2 rounded-md bg-muted p-3 text-xs leading-relaxed whitespace-pre-wrap">{text}</pre>}
+        {open && <pre className="mt-2 rounded-md bg-muted p-3 text-xs leading-relaxed whitespace-pre-wrap">{prompt}</pre>}
       </div>
       <Button size="sm" variant={wasCopied ? "outline" : "default"} onClick={() => void copy()}>
         {wasCopied ? <Check /> : <Copy />}
@@ -51,9 +51,9 @@ function PromptRow({ seed, prompt, text }: { seed: number; prompt: string; text:
 }
 
 export function Prompts() {
-  const pending = usePending();
-  const add = useAddPrompts();
   const includeNegative = useSettings((s) => s.includeNegative);
+  const pending = usePending(includeNegative);
+  const add = useAddPrompts();
   const setIncludeNegative = useSettings((s) => s.setIncludeNegative);
   const [count, setCount] = useState("10");
 
@@ -79,7 +79,7 @@ export function Prompts() {
           className="flex items-end gap-2"
           onSubmit={(e) => {
             e.preventDefault();
-            if (validCount) add.mutate(n, { onSuccess: () => toast.success(`Added ${n} prompts`) });
+            if (validCount) add.mutate({ count: n, useNegative: includeNegative }, { onSuccess: () => toast.success(`Added ${n} prompts`) });
           }}
         >
           <div className="grid gap-1.5">
@@ -117,7 +117,7 @@ export function Prompts() {
           </p>
           <ul className="divide-y">
             {pending.data.items.map(({ seed, prompt }) => (
-              <PromptRow key={seed} seed={seed} prompt={prompt} text={promptForGemini(prompt, pending.data.prefix, pending.data.negative, includeNegative)} />
+              <PromptRow key={seed} seed={seed} prompt={prompt} />
             ))}
           </ul>
         </>

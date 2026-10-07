@@ -38,7 +38,7 @@ export function Generate() {
   // Refresh counts and the gallery once a job ends.
   useEffect(() => {
     if (!finished) return;
-    for (const k of [keys.status, keys.pending, keys.images]) void qc.invalidateQueries({ queryKey: k });
+    for (const k of [keys.status, ["pending"], keys.images]) void qc.invalidateQueries({ queryKey: k });
   }, [finished, qc]);
 
   const n = Number(count);

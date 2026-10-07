@@ -19,8 +19,8 @@ http.interceptors.response.use(
 
 export const api = {
   status: () => http.get<Status>("/status").then((r) => r.data),
-  pending: () => http.get<PromptsResponse>("/prompts/pending").then((r) => r.data),
-  addPrompts: (count: number) => http.post<PromptsResponse>("/prompts/new", { count }).then((r) => r.data),
+  pending: (useNegative: boolean) => http.get<PromptsResponse>("/prompts/pending", { params: { useNegative: useNegative ? "1" : "0" } }).then((r) => r.data),
+  addPrompts: (count: number, useNegative: boolean) => http.post<PromptsResponse>("/prompts/new", { count, useNegative }).then((r) => r.data),
   images: () => http.get<ImageItem[]>("/images").then((r) => r.data),
   reject: (seed: number) => http.post(`/images/${seed}/reject`).then((r) => r.data),
   importImages: (files: File[], seeds: number[]) => {

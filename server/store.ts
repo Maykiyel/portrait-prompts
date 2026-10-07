@@ -5,12 +5,11 @@ import type { ImageItem, ImportResult, PromptsResponse, Status } from "../shared
 import {
   assertSalt, issueSeeds, loadTemplate, logManifest, pad, pendingSeeds, readCursor, saveImage,
 } from "../common";
-import { buildPrompt } from "../sampler";
+import { buildPrompt, composePrompt } from "../sampler";
 
 export const OUT = process.env.OUT_DIR ?? "out";
 export const OUT_W = 768;
 export const OUT_H = 1152;
-const PREFIX = "Generate an image. ";
 
 export class ApiError extends Error {
   constructor(public status: 400 | 404 | 409 | 500, message: string) {
@@ -65,25 +64,23 @@ export function getStatus(salt: string): Status {
   };
 }
 
-function promptsFor(seeds: number[], salt: string): PromptsResponse {
+function promptsFor(seeds: number[], salt: string, useNegative: boolean): PromptsResponse {
   const { template, negative } = loadTemplate();
   return {
-    items: seeds.map((seed) => ({ seed, prompt: buildPrompt(template, seed, salt).trim() })),
-    negative,
-    prefix: PREFIX,
+    items: seeds.map((seed) => ({ seed, prompt: composePrompt(template, negative, seed, salt, useNegative) })),
   };
 }
 
-export function getPending(salt: string): PromptsResponse {
+export function getPending(salt: string, useNegative = false): PromptsResponse {
   assertSalt(OUT, salt);
-  return promptsFor(pendingSeeds(OUT), salt);
+  return promptsFor(pendingSeeds(OUT), salt, useNegative);
 }
 
 /** Issues `count` new seeds and returns every waiting prompt, new ones included. */
-export function addPrompts(count: number, salt: string): PromptsResponse {
+export function addPrompts(count: number, salt: string, useNegative = false): PromptsResponse {
   if (!Number.isInteger(count) || count < 1 || count > 500) throw new ApiError(400, "count must be a whole number from 1 to 500");
   issueSeeds(OUT, salt, count);
-  return promptsFor(pendingSeeds(OUT), salt);
+  return promptsFor(pendingSeeds(OUT), salt, useNegative);
 }
 
 export function getPrompt(seed: number, salt: string): string {

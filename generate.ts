@@ -2,7 +2,7 @@ import "dotenv/config";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { assertSalt, claimSeeds, loadTemplate, logManifest, pad, saveImage } from "./common";
-import { buildPrompt } from "./sampler";
+import { composePrompt } from "./sampler";
 import { geminiGenerator, MODELS, type Generator } from "./gemini";
 
 export type RunOptions = {
@@ -62,9 +62,7 @@ export async function run(opts: RunOptions, generate: Generator = geminiGenerato
   async function worker() {
     while (next < todo.length) {
       const seed = todo[next++];
-      let prompt = buildPrompt(template, seed, opts.salt).trim();
-      // Gemini has no negative prompt field, so the list goes into the prompt text.
-      if (opts.useNegative) prompt += `\n\nAvoid: ${negative}.`;
+      const prompt = composePrompt(template, negative, seed, opts.salt, opts.useNegative);
 
       const log = { seed, version, salt: opts.salt, model: opts.model, prompt };
       try {

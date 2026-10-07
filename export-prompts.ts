@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
-import { buildPrompt } from "./sampler";
+import { composePrompt } from "./sampler";
 import { claimSeeds, loadTemplate, pad } from "./common";
 
 function arg(name: string, fallback: string) {
@@ -28,8 +28,7 @@ const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 const cards = seeds.map((seed) => {
-  let p = "Generate an image. " + buildPrompt(template, seed, salt).trim();
-  if (useNegative) p += `\n\nAvoid: ${negative}.`;
+  const p = composePrompt(template, negative, seed, salt, useNegative);
   return `<article data-seed="${seed}">
   <header><label><input type="checkbox"> <b>${pad(seed)}</b></label><button type="button">Copy</button></header>
   <pre>${esc(p)}</pre>

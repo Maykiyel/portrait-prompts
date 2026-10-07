@@ -1,12 +1,9 @@
-/** The person description from a prompt, without the lead-in and the camera notes. */
+/** A short excerpt for the list, without encoding any knowledge of Prompt wording. */
 export function summarize(prompt: string): string {
-  const body = prompt.replace(/^Photorealistic portrait photograph of one fictional adult, /, "");
-  const end = body.indexOf(". ");
-  return end > 0 ? body.slice(0, end) : body.split("\n")[0];
-}
-
-export function promptForGemini(prompt: string, prefix: string, negative: string, includeNegative: boolean) {
-  return `${prefix}${prompt}${includeNegative ? `\n\nAvoid: ${negative}.` : ""}`;
+  const firstLine = prompt.split("\n")[0];
+  const excerpt = firstLine.split(". ").slice(1).join(". ") || firstLine;
+  const end = excerpt.indexOf(". ");
+  return end > 0 ? excerpt.slice(0, end) : excerpt;
 }
 
 export async function copyText(text: string): Promise<boolean> {

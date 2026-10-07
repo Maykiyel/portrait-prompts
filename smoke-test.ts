@@ -265,6 +265,35 @@ try {
   rmSync(fixture, { recursive: true, force: true });
 }
 
+// The free route receives finished Prompt text from the API. Compare it to
+// the existing generator with a fake Buffer result: no key or remote call.
+const promptDir = mkdtempSync(join(tempBase, "portrait-api-prompts-"));
+const previousOut = process.env.OUT_DIR;
+try {
+  process.env.OUT_DIR = promptDir;
+  const { getPending } = await import("./server/store");
+  const promptFolder = openOutputFolder(promptDir, "");
+  promptFolder.issueSeeds(1);
+  const withoutNegative = getPending("", false);
+  const withNegative = getPending("", true);
+  results.push(check("API returns finished Prompt text, not parts for the browser",
+    Object.keys(withNegative).join() === "items" &&
+    withoutNegative.items[0].prompt === promptFolder.promptFor(1) &&
+    withNegative.items[0].prompt === promptFolder.promptFor(1, true)));
+  results.push(check("API appends the Negative list only when requested",
+    !withoutNegative.items[0].prompt.includes("\n\nAvoid:") && withNegative.items[0].prompt.includes("\n\nAvoid:")));
+  let sent = "";
+  await run({ ...defaults, outDir: promptDir, count: 1, salt: "", useNegative: true }, async (prompt) => {
+    sent = prompt;
+    return good();
+  });
+  results.push(check("free and API routes send the exact same Prompt", sent === withNegative.items[0].prompt));
+} finally {
+  if (previousOut === undefined) delete process.env.OUT_DIR;
+  else process.env.OUT_DIR = previousOut;
+  rmSync(promptDir, { recursive: true, force: true });
+}
+
 for (const d of [out, out2, inDir, "out-smoke3"]) rmSync(d, { recursive: true, force: true });
 const pass = results.every(Boolean);
 console.log(pass ? "\nsmoke test passed" : "\nsmoke test FAILED");
