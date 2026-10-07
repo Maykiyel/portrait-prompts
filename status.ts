@@ -1,6 +1,7 @@
+import "dotenv/config";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { currentSalt, pad, pendingSeeds, readCursor } from "./common";
+import { pad, pendingSeeds, readCursor } from "./common";
 
 const outDir = process.argv.slice(2).filter((a) => a !== "--")[0] ?? "out";
 const next = readCursor(outDir);
@@ -19,7 +20,7 @@ if (existsSync(manifest)) {
   failed = [...last.values()].filter((s) => s === "failed").length;
 }
 
-console.log(`Seed salt       ${currentSalt() ? "set" : "not set"}`);
+console.log(`Seed salt       ${(process.env.SEED_SALT ?? "").trim() ? "set" : "not set"}`);
 console.log(`Next new seed   ${next}`);
 console.log(`Images done     ${done}`);
 console.log(`Waiting         ${pending.length}${pending.length ? `  (${pad(pending[0])} to ${pad(pending[pending.length - 1])})` : ""}`);

@@ -1,5 +1,6 @@
 // Runs the pipeline with fake generators. No API key or network needed.
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import sharp from "sharp";
@@ -26,13 +27,13 @@ rmSync(inDir, { recursive: true, force: true });
 const results: boolean[] = [];
 
 // API path with the counter
-await run({ ...defaults, count: 4, outDir: out }, good);
+await run({ ...defaults, count: 4, outDir: out, salt: "" }, good);
 results.push(check("first run makes seeds 1 to 4, counter at 5", readCursor(out) === 5));
-await run({ ...defaults, count: 2, outDir: out }, good);
+await run({ ...defaults, count: 2, outDir: out, salt: "" }, good);
 results.push(check("second run continues at 5 and 6", readdirSync(out).includes("00006.png") && readCursor(out) === 7));
-await run({ ...defaults, count: 2, outDir: out }, bad);
+await run({ ...defaults, count: 2, outDir: out, salt: "" }, bad);
 results.push(check("failed run uses 7 and 8, no images", !readdirSync(out).includes("00007.png") && readCursor(out) === 9));
-await run({ ...defaults, count: 2, outDir: out }, good);
+await run({ ...defaults, count: 2, outDir: out, salt: "" }, good);
 results.push(
   check(
     "next run retries 7 and 8 and does not advance",
@@ -43,26 +44,26 @@ const meta = await sharp(`${out}/00001.png`).metadata();
 results.push(check("final image is 768x1152", meta.width === 768 && meta.height === 1152));
 const lines = readFileSync(`${out}/manifest.jsonl`, "utf8").trim().split("\n");
 results.push(check("manifest logs every attempt", lines.length === 10));
-await run({ ...defaults, count: 3, outDir: out, dryRun: true }, good);
+await run({ ...defaults, count: 3, outDir: out, dryRun: true, salt: "" }, good);
 results.push(check("dry run leaves counter alone", readCursor(out) === 9));
 
 // Manual path with the counter
 const out2 = "out-smoke2";
 rmSync(out2, { recursive: true, force: true });
-claimSeeds(out2, 3); // what the prompts command does
+claimSeeds(out2, "", 3); // what the prompts command does
 mkdirSync(inDir);
 for (const [i, name] of ["b.png", "a.png"].entries()) {
   const p = `${inDir}/${name}`;
   await sharp({ create: { width: 1024, height: 1024, channels: 3, background: "#a67a7a" } }).png().toFile(p);
   utimesSync(p, new Date(2026, 0, 1, 0, i), new Date(2026, 0, 1, 0, i)); // b is oldest
 }
-await importImages({ inDir, outDir: out2, width: 768, height: 1152, dryRun: false });
+await importImages({ inDir, outDir: out2, width: 768, height: 1152, dryRun: false, salt: "" });
 const rows = readFileSync(`${out2}/manifest.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 results.push(check("import fills seeds 1 and 2 by download time", rows[0].seed === 1 && rows[0].file === "b.png" && rows[1].seed === 2));
-results.push(check("seed 3 still waiting", claimSeeds(out2, 2, false).join() === "3,4"));
+results.push(check("seed 3 still waiting", claimSeeds(out2, "", 2, false).join() === "3,4"));
 let threw = false;
 try {
-  await importImages({ inDir, outDir: "out-smoke3", width: 768, height: 1152, dryRun: false });
+  await importImages({ inDir, outDir: "out-smoke3", width: 768, height: 1152, dryRun: false, salt: "" });
 } catch {
   threw = true;
 }
@@ -73,7 +74,7 @@ const counterDir = "out-smoke5";
 rmSync(counterDir, { recursive: true, force: true });
 mkdirSync(counterDir, { recursive: true });
 results.push(check("a folder with no counter reads as seed 1", readCursor(counterDir) === 1));
-results.push(check("a folder with no counter still hands out seed 1", claimSeeds(counterDir, 1).join() === "1"));
+results.push(check("a folder with no counter still hands out seed 1", claimSeeds(counterDir, "", 1).join() === "1"));
 writeFileSync(join(counterDir, "cursor.json"), "{ this is not json");
 const readCounter = (dir: string) => {
   try {
@@ -86,7 +87,7 @@ const readCounter = (dir: string) => {
 results.push(check("an unreadable counter is refused by code", readCounter(counterDir) === "unreadable-counter"));
 let claimedFromBroken: string;
 try {
-  claimedFromBroken = claimSeeds(counterDir, 1).join();
+  claimedFromBroken = claimSeeds(counterDir, "", 1).join();
 } catch (err) {
   claimedFromBroken = err instanceof ArchiveError ? err.code : `not an ArchiveError: ${String(err)}`;
 }
@@ -97,7 +98,7 @@ results.push(check("a counter with no usable next is refused", readCounter(count
 // Two readers loop for three seconds while this process keeps handing out Seeds.
 const writerDir = "out-smoke6";
 rmSync(writerDir, { recursive: true, force: true });
-claimSeeds(writerDir, 1); // the counter now exists for the readers to race against
+claimSeeds(writerDir, "", 1); // the counter now exists for the readers to race against
 const readers = [0, 1].map(() =>
   execFile(process.execPath, [
     "-e",
@@ -129,7 +130,7 @@ const reports = Promise.all(
   ),
 );
 const writingUntil = Date.now() + 2800;
-while (Date.now() < writingUntil) issueSeeds(writerDir, 1);
+while (Date.now() < writingUntil) issueSeeds(writerDir, "", 1);
 const torn = await reports;
 results.push(check(
   "a reader racing the writer never sees a partial counter",
@@ -144,20 +145,24 @@ const { template } = loadTemplate();
 delete process.env.SEED_SALT;
 results.push(check("same seed and salt give the same prompt", buildPrompt(template, 5, "a") === buildPrompt(template, 5, "a")));
 results.push(check("different salts give different prompts", buildPrompt(template, 5, "a") !== buildPrompt(template, 5, "b")));
+const explicit = buildPrompt(template, 5, "a");
+process.env.SEED_SALT = "the environment cannot change this Prompt";
+results.push(check("a caller supplies the salt, not the environment", buildPrompt(template, 5, "a") === explicit));
+delete process.env.SEED_SALT;
 const salted = Array.from({ length: 50 }, (_, i) => i + 1).filter((n) => buildPrompt(template, n, "x") !== buildPrompt(template, n, "")).length;
 results.push(check("salt changes almost every seed", salted >= 48));
-results.push(check("no salt matches the plain seed", buildPrompt(template, 9) === buildPrompt(template, 9, "")));
+// Unsalted Seed 9's Prompt before this change: preserves the plain-seed PRNG path.
+const plain = createHash("sha256").update(buildPrompt(template, 9, "")).digest("hex");
+results.push(check("no salt matches the plain seed", plain === "210a57d95ba0d439294b0ea609484ea277514f5353b877097d8f96423df558ab"));
 const guardDir = "out-smoke4";
 rmSync(guardDir, { recursive: true, force: true });
-claimSeeds(guardDir, 2); // started with no salt
-process.env.SEED_SALT = "changed";
+claimSeeds(guardDir, "", 2); // started with no salt
 let guarded = false;
 try {
-  claimSeeds(guardDir, 2);
+  claimSeeds(guardDir, "changed", 2);
 } catch {
   guarded = true;
 }
-delete process.env.SEED_SALT;
 rmSync(guardDir, { recursive: true, force: true });
 results.push(check("changing the salt mid-run is blocked", guarded));
 

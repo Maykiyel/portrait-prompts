@@ -8,7 +8,7 @@ let job: JobState = fresh();
 
 export const getJob = () => job;
 
-export function startJob(req: GenerateRequest) {
+export function startJob(req: GenerateRequest, salt: string) {
   if (job.status === "running") throw new ApiError(409, "A job is already running");
   if (!process.env.GEMINI_API_KEY) throw new ApiError(400, "GEMINI_API_KEY is not set. Add it to .env and restart the server.");
   if (!Number.isInteger(req.count) || req.count < 1 || req.count > 500) throw new ApiError(400, "count must be a whole number from 1 to 500");
@@ -26,6 +26,7 @@ export function startJob(req: GenerateRequest) {
       concurrency: Math.min(Math.max(1, req.concurrency), 8),
       useNegative: req.useNegative,
       outDir: OUT,
+      salt,
     },
     undefined,
     {

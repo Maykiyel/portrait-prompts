@@ -1,6 +1,7 @@
+import "dotenv/config";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { assertSalt, claimSeeds, currentSalt, loadTemplate, logManifest, pad, saveImage } from "./common";
+import { assertSalt, claimSeeds, loadTemplate, logManifest, pad, saveImage } from "./common";
 import { buildPrompt } from "./sampler";
 import { geminiGenerator, MODELS, type Generator } from "./gemini";
 
@@ -17,9 +18,11 @@ export type RunOptions = {
   height: number;
   useNegative: boolean;
   dryRun: boolean;
+  /** Handed in by whoever started the run, never read from the environment here. */
+  salt: string;
 };
 
-export const defaults: RunOptions = {
+export const defaults: Omit<RunOptions, "salt"> = {
   count: 10,
   concurrency: 3,
   model: MODELS.flash,
@@ -38,13 +41,13 @@ export type RunHooks = {
 };
 
 export async function run(opts: RunOptions, generate: Generator = geminiGenerator, hooks: RunHooks = {}) {
-  assertSalt(opts.outDir);
+  assertSalt(opts.outDir, opts.salt);
   const { version, template, negative } = loadTemplate();
 
   const seeds =
     opts.start !== undefined
       ? Array.from({ length: opts.count }, (_, i) => opts.start! + i)
-      : claimSeeds(opts.outDir, opts.count, !opts.dryRun);
+      : claimSeeds(opts.outDir, opts.salt, opts.count, !opts.dryRun);
   const todo = seeds.filter((s) => !existsSync(join(opts.outDir, `${pad(s)}.png`)));
   console.log(
     `${version} | ${opts.model} | ${todo.length} to generate, ${seeds.length - todo.length} already done` +
@@ -59,11 +62,11 @@ export async function run(opts: RunOptions, generate: Generator = geminiGenerato
   async function worker() {
     while (next < todo.length) {
       const seed = todo[next++];
-      let prompt = buildPrompt(template, seed).trim();
+      let prompt = buildPrompt(template, seed, opts.salt).trim();
       // Gemini has no negative prompt field, so the list goes into the prompt text.
       if (opts.useNegative) prompt += `\n\nAvoid: ${negative}.`;
 
-      const log = { seed, version, salt: currentSalt(), model: opts.model, prompt };
+      const log = { seed, version, salt: opts.salt, model: opts.model, prompt };
       try {
         if (opts.dryRun) {
           console.log(`\n[${seed}] ${prompt}`);
@@ -94,7 +97,7 @@ export async function run(opts: RunOptions, generate: Generator = geminiGenerato
 }
 
 function parseArgs(argv: string[]): RunOptions {
-  const o = { ...defaults };
+  const o: RunOptions = { ...defaults, salt: (process.env.SEED_SALT ?? "").trim() };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const v = () => argv[++i];

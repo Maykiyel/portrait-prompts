@@ -4,13 +4,14 @@ import { createReadStream } from "node:fs";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
-import "../common"; // loads .env
+import "dotenv/config";
 import type { GenerateRequest } from "../shared/api-types";
 import { getJob, startJob } from "./jobs";
 import {
   ApiError, addPrompts, getPending, getStatus, imagePath, importFiles, listImages, rejectImage, thumbnail,
 } from "./store";
 
+const salt = (process.env.SEED_SALT ?? "").trim();
 const app = new Hono();
 
 app.onError((err, c) => {
@@ -27,11 +28,11 @@ const seedParam = (v: string) => {
 };
 
 const api = new Hono();
-api.get("/status", (c) => c.json(getStatus()));
-api.get("/prompts/pending", (c) => c.json(getPending()));
+api.get("/status", (c) => c.json(getStatus(salt)));
+api.get("/prompts/pending", (c) => c.json(getPending(salt)));
 api.post("/prompts/new", async (c) => {
   const { count } = await c.req.json<{ count: number }>();
-  return c.json(addPrompts(count));
+  return c.json(addPrompts(count, salt));
 });
 
 api.get("/images", (c) => c.json(listImages()));
@@ -64,10 +65,10 @@ api.post("/import", async (c) => {
   } catch {
     throw new ApiError(400, "seeds must be a JSON array");
   }
-  return c.json({ results: await importFiles(files, seeds) });
+  return c.json({ results: await importFiles(files, seeds, salt) });
 });
 
-api.post("/generate", async (c) => c.json(startJob(await c.req.json<GenerateRequest>())));
+api.post("/generate", async (c) => c.json(startJob(await c.req.json<GenerateRequest>(), salt)));
 api.get("/generate/job", (c) => c.json(getJob()));
 
 app.route("/api", api);

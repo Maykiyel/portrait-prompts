@@ -3,7 +3,7 @@ import { join } from "node:path";
 import sharp from "sharp";
 import type { ImageItem, ImportResult, PromptsResponse, Status } from "../shared/api-types";
 import {
-  assertSalt, currentSalt, issueSeeds, loadTemplate, logManifest, pad, pendingSeeds, readCursor, saveImage,
+  assertSalt, issueSeeds, loadTemplate, logManifest, pad, pendingSeeds, readCursor, saveImage,
 } from "../common";
 import { buildPrompt } from "../sampler";
 
@@ -46,11 +46,11 @@ function finalSeeds(): number[] {
     .sort((a, b) => a - b);
 }
 
-export function getStatus(): Status {
+export function getStatus(salt: string): Status {
   const { version } = loadTemplate();
   let problem: string | undefined;
   try {
-    assertSalt(OUT);
+    assertSalt(OUT, salt);
   } catch (err) {
     problem = err instanceof Error ? err.message : String(err);
   }
@@ -60,35 +60,35 @@ export function getStatus(): Status {
     next: readCursor(OUT),
     done: finalSeeds().length,
     waiting: pendingSeeds(OUT).length,
-    saltSet: currentSalt() !== "",
+    saltSet: salt !== "",
     hasApiKey: Boolean(process.env.GEMINI_API_KEY),
   };
 }
 
-function promptsFor(seeds: number[]): PromptsResponse {
+function promptsFor(seeds: number[], salt: string): PromptsResponse {
   const { template, negative } = loadTemplate();
   return {
-    items: seeds.map((seed) => ({ seed, prompt: buildPrompt(template, seed).trim() })),
+    items: seeds.map((seed) => ({ seed, prompt: buildPrompt(template, seed, salt).trim() })),
     negative,
     prefix: PREFIX,
   };
 }
 
-export function getPending(): PromptsResponse {
-  assertSalt(OUT);
-  return promptsFor(pendingSeeds(OUT));
+export function getPending(salt: string): PromptsResponse {
+  assertSalt(OUT, salt);
+  return promptsFor(pendingSeeds(OUT), salt);
 }
 
 /** Issues `count` new seeds and returns every waiting prompt, new ones included. */
-export function addPrompts(count: number): PromptsResponse {
+export function addPrompts(count: number, salt: string): PromptsResponse {
   if (!Number.isInteger(count) || count < 1 || count > 500) throw new ApiError(400, "count must be a whole number from 1 to 500");
-  issueSeeds(OUT, count);
-  return promptsFor(pendingSeeds(OUT));
+  issueSeeds(OUT, salt, count);
+  return promptsFor(pendingSeeds(OUT), salt);
 }
 
-export function getPrompt(seed: number): string {
+export function getPrompt(seed: number, salt: string): string {
   const { template } = loadTemplate();
-  return buildPrompt(template, seed).trim();
+  return buildPrompt(template, seed, salt).trim();
 }
 
 export function listImages(): ImageItem[] {
@@ -142,8 +142,8 @@ export function rejectImage(seed: number) {
   logManifest(OUT, { seed, status: "rejected", ts: new Date().toISOString() });
 }
 
-export async function importFiles(files: File[], seeds: number[]): Promise<ImportResult[]> {
-  assertSalt(OUT);
+export async function importFiles(files: File[], seeds: number[], salt: string): Promise<ImportResult[]> {
+  assertSalt(OUT, salt);
   if (files.length === 0) throw new ApiError(400, "No images were sent");
   if (seeds.length !== files.length) throw new ApiError(400, "Send one seed per image");
   if (new Set(seeds).size !== seeds.length) throw new ApiError(400, "Two images share a seed");
@@ -162,8 +162,8 @@ export async function importFiles(files: File[], seeds: number[]): Promise<Impor
       const warning = Math.abs(ratio / (2 / 3) - 1) > 0.06 ? `${meta.width}x${meta.height} is not 2:3, so the crop cuts part of the image` : undefined;
       await saveImage(buf, seed, { outDir: OUT, width: OUT_W, height: OUT_H });
       logManifest(OUT, {
-        seed, version, salt: currentSalt(), source: "manual", file: file.name,
-        prompt: getPrompt(seed), status: "ok", ts: new Date().toISOString(),
+        seed, version, salt, source: "manual", file: file.name,
+        prompt: getPrompt(seed, salt), status: "ok", ts: new Date().toISOString(),
       });
       results.push({ seed, file: file.name, ok: true, warning });
     } catch (err) {

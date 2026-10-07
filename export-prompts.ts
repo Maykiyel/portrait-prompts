@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { writeFileSync } from "node:fs";
 import { buildPrompt } from "./sampler";
 import { claimSeeds, loadTemplate, pad } from "./common";
@@ -11,6 +12,7 @@ const startArg = arg("--start", "");
 const count = Number(arg("--count", "20"));
 const useNegative = !process.argv.includes("--no-negative");
 const outFile = arg("--out", "prompts.html");
+const salt = (process.env.SEED_SALT ?? "").trim();
 
 const { version, template, negative } = loadTemplate();
 
@@ -18,7 +20,7 @@ const { version, template, negative } = loadTemplate();
 const seeds =
   startArg !== ""
     ? Array.from({ length: count }, (_, i) => Number(startArg) + i)
-    : claimSeeds(arg("--dir", "out"), count);
+    : claimSeeds(arg("--dir", "out"), salt, count);
 const first = seeds[0];
 const last = seeds[seeds.length - 1];
 
@@ -26,7 +28,7 @@ const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 const cards = seeds.map((seed) => {
-  let p = "Generate an image. " + buildPrompt(template, seed).trim();
+  let p = "Generate an image. " + buildPrompt(template, seed, salt).trim();
   if (useNegative) p += `\n\nAvoid: ${negative}.`;
   return `<article data-seed="${seed}">
   <header><label><input type="checkbox"> <b>${pad(seed)}</b></label><button type="button">Copy</button></header>

@@ -1,5 +1,3 @@
-import { currentSalt } from "./common";
-
 function mulberry32(a: number) {
   return () => {
     a |= 0;
@@ -115,8 +113,8 @@ export const pools: Record<string, string[]> = {
 
 const pick = <T,>(r: () => number, xs: T[]) => xs[Math.floor(r() * xs.length)];
 
-/** Same template, seed and salt always give the same prompt. */
-export function buildPrompt(template: string, seed: number, salt: string = currentSalt()): string {
+/** Same template, seed and salt always give the same prompt. The salt is required: there is no ambient one to fall back on. */
+export function buildPrompt(template: string, seed: number, salt: string): string {
   const r = mulberry32(salt ? hash32(`${salt}:${seed}`) : seed);
   const v: Record<string, string> = {};
   for (const [k, xs] of Object.entries(pools)) v[k] = pick(r, xs);
