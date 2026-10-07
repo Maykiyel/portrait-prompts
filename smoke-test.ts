@@ -1,13 +1,15 @@
 // Runs the pipeline with fake generators. No API key or network needed.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { claimSeeds, issueSeeds, loadTemplate, readCursor } from "./common";
 import { ArchiveError } from "./errors";
 import { defaults, run } from "./generate";
 import { importImages } from "./import-images";
+import { openOutputFolder } from "./output-folder";
 import { buildPrompt, pools } from "./sampler";
 
 const good = async () =>
@@ -176,6 +178,92 @@ results.push(check("500 prompts are almost all unique", new Set(prompts).size >=
 const slips = prompts.filter((p) => /\{|\}|  | \.|,,|\b(a|an) (a|an)\b|\ba [aeiou]|\ban [^aeiou\s\d]/i.test(p));
 results.push(check("no grammar or placeholder slips in 500 prompts", slips.length === 0));
 if (slips.length) console.log("  e.g.", slips[0].split("\n")[0]);
+
+// The new output-folder interface, on real files in a throwaway folder. Existing
+// callers above are intentionally unchanged until the migration tickets.
+const tempBase = process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "Temp", "opencode") : tmpdir();
+const fixture = mkdtempSync(join(tempBase, "portrait-prompts-"));
+const originalCwd = process.cwd();
+const streamBytes = async (stream: NodeJS.ReadableStream) => {
+  const parts: Buffer[] = [];
+  for await (const part of stream) parts.push(Buffer.from(part));
+  return Buffer.concat(parts);
+};
+const errorCode = (action: () => unknown) => {
+  try {
+    action();
+    return "no error";
+  } catch (err) {
+    return err instanceof ArchiveError ? err.code : String(err);
+  }
+};
+const asyncCode = async (action: () => Promise<unknown>) => {
+  try {
+    await action();
+    return "no error";
+  } catch (err) {
+    return err instanceof ArchiveError ? err.code : String(err);
+  }
+};
+try {
+  // Only fixture setup writes these files; the assertions below read through the module.
+  writeFileSync(join(fixture, "template.txt"), "# fixture-v1\nPortrait {age}.");
+  writeFileSync(join(fixture, "negative.txt"), "fixture exclusions");
+  process.chdir(fixture);
+  const folder = openOutputFolder(join(fixture, "archive"), "alpha");
+  results.push(check("opening the output folder returns a frozen interface", Object.isFrozen(folder)));
+  results.push(check("a new output folder reports Seed 1", folder.status().next === 1 && folder.status().waiting === 0));
+  results.push(check("a claim preview does not commit", folder.claimSeeds(2, false).join() === "1,2" && folder.status().next === 1));
+  results.push(check("claiming Seeds commits and puts Waiting Seeds first", folder.claimSeeds(3).join() === "1,2,3" && folder.claimSeeds(2).join() === "1,2"));
+  results.push(check("issuing fresh Seeds skips Waiting Seeds", folder.issueSeeds(2).join() === "4,5"));
+  results.push(check("invalid count and Seed raise named codes", errorCode(() => folder.claimSeeds(0)) === "invalid-count" && errorCode(() => folder.hasFrame(-1)) === "invalid-seed"));
+  results.push(check("no Frame is a missing-Frame code", errorCode(() => folder.readFrame(1)) === "missing-frame"));
+  results.push(check("an unissued Seed is not waiting", await asyncCode(() => folder.writeFrame({ seed: 6, buffer: Buffer.from("not a Frame") })) === "seed-not-waiting"));
+  const prompt = folder.promptFor(1);
+  results.push(check("finished Prompt is deterministic and Negative list is optional",
+    prompt.startsWith("Generate an image. Portrait ") && prompt === folder.promptFor(1) &&
+    folder.promptFor(1, true) === `${prompt}\n\nAvoid: fixture exclusions.` && folder.promptsFor([1])[0].prompt === prompt));
+  writeFileSync(join(fixture, "template.txt"), "# fixture-v2\nChanged {age}.");
+  writeFileSync(join(fixture, "negative.txt"), "changed exclusions");
+  results.push(check("Prompt files are cached for the life of the module",
+    folder.status().version === "fixture-v1" && folder.promptFor(1, true) === `${prompt}\n\nAvoid: fixture exclusions.` &&
+    openOutputFolder(join(fixture, "other"), "alpha").status().version === "fixture-v2"));
+  const img = await good();
+  const imports = await folder.importFrames(
+    [{ name: "corrupt.png", buffer: Buffer.from("bad") }, { name: "good.png", buffer: img }], [1, 2],
+  );
+  results.push(check("one corrupt download does not lose the other Frame", !imports[0].ok && imports[1].ok && folder.hasFrame(2) && folder.waitingSeeds().includes(1)));
+  results.push(check("batch invalidity is refused before writing", await asyncCode(() => folder.importFrames([{ name: "repeat.png", buffer: img }], [2])) === "seed-not-waiting"));
+  const framed = await streamBytes(folder.readFrame(2));
+  const raw = await streamBytes(folder.readFrame(2, true));
+  const frameMeta = await sharp(framed).metadata();
+  const rawMeta = await sharp(raw).metadata();
+  results.push(check("Frame and Raw image are streams with their original dimensions",
+    frameMeta.width === 768 && frameMeta.height === 1152 && rawMeta.width === 848 && rawMeta.height === 1264));
+  const thumbs = await streamBytes(await folder.readThumbnail(2, 160));
+  results.push(check("Thumbnail is a stream", (await sharp(thumbs).metadata()).width === 160));
+  results.push(check("Frame records and status come through the interface",
+    folder.listFrames().map((frame) => frame.seed).join() === "2" && folder.status().done === 1 && folder.status().waiting === 4));
+  results.push(check("a different salt cannot claim this folder", errorCode(() => openOutputFolder(join(fixture, "archive"), "beta").claimSeeds(1)) === "salt-mismatch"));
+  folder.recordAttempt({ seed: 1, status: "failed", error: "fixture failure" });
+  results.push(check("status counts a Seed whose last Attempt failed", folder.status().failed === 1));
+  await folder.writeFrame({ seed: 5, buffer: img, model: "fixture-model", prompt: folder.promptFor(5, true) });
+  results.push(check("Frame records are newest-first with Attempt provenance",
+    folder.listFrames().map((frame) => frame.seed).join() === "5,2" &&
+    folder.listFrames()[0].model === "fixture-model" && folder.listFrames()[0].prompt === folder.promptFor(5, true)));
+  folder.rejectFrame(2);
+  results.push(check("Rejection returns a Seed to waiting", !folder.hasFrame(2) && folder.waitingSeeds().includes(2) && folder.listFrames().map((frame) => frame.seed).join() === "5"));
+  results.push(check("a second Rejection raises the missing-Frame code", errorCode(() => folder.rejectFrame(2)) === "missing-frame"));
+  // A malformed counter is a fixture for the unreadable-state path; assertions
+  // still ask the module, never inspect the on-disk representation.
+  writeFileSync(join(fixture, "archive", "cursor.json"), "{ corrupt");
+  results.push(check("unreadable counter refuses Seed issuance instead of resetting", errorCode(() => folder.issueSeeds(1)) === "unreadable-counter"));
+  results.push(check("status reports an unusable folder without inventing a next Seed",
+    folder.status().next === null && folder.status().waiting === null && !!folder.status().problem));
+} finally {
+  process.chdir(originalCwd);
+  rmSync(fixture, { recursive: true, force: true });
+}
 
 for (const d of [out, out2, inDir, "out-smoke3"]) rmSync(d, { recursive: true, force: true });
 const pass = results.every(Boolean);

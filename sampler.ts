@@ -121,3 +121,9 @@ export function buildPrompt(template: string, seed: number, salt: string): strin
   if (v.gender !== "man") v.facialHair = "";
   return template.replace(/\{(\w+)\}/g, (_, k) => v[k]);
 }
+
+/** The complete text sent to Gemini; the caller supplies the salt and cached Prompt template. */
+export function composePrompt(template: string, negative: string, seed: number, salt: string, useNegative = false): string {
+  const prompt = `Generate an image. ${buildPrompt(template, seed, salt).trim()}`;
+  return useNegative ? `${prompt}\n\nAvoid: ${negative}.` : prompt;
+}
