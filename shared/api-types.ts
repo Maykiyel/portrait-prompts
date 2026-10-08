@@ -1,8 +1,10 @@
 export type Status = {
   version: string;
-  next: number;
+  /** Null when the folder cannot be read. Never a guess at Seed 1: see the ADR. */
+  next: number | null;
   done: number;
-  waiting: number;
+  /** Null when the folder cannot be read, which is not the same as zero waiting. */
+  waiting: number | null;
   saltSet: boolean;
   hasApiKey: boolean;
   /** Set when the saved output folder cannot be used, for example after the salt changed. */
