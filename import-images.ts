@@ -1,9 +1,9 @@
 import "dotenv/config";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
 import sharp from "sharp";
-import { buildPrompt } from "./sampler";
-import { assertSalt, loadTemplate, logManifest, pad, pendingSeeds, saveImage } from "./common";
+import { pad } from "./common";
+import { openOutputFolder, type OutputFolder } from "./output-folder";
 
 export type ImportOptions = {
   inDir: string;
@@ -18,9 +18,30 @@ export type ImportOptions = {
 
 const EXT = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 
+/**
+ * The Seeds named with --start. The module only hands a Frame to a waiting Seed,
+ * so an import over Seeds the counter never issued asks it for the gap first. A
+ * dry run writes nothing and moves nothing, exactly as it did before.
+ */
+function namedSeeds(folder: OutputFolder, start: number, count: number, commit: boolean): number[] {
+  const last = start + count;
+  let next = folder.status().next ?? 1;
+  if (commit) {
+    while (next < last) {
+      const take = Math.min(500, last - next);
+      folder.issueSeeds(take);
+      next += take;
+    }
+  }
+  return Array.from({ length: count }, (_, i) => start + i);
+}
+
 export async function importImages(o: ImportOptions) {
-  assertSalt(o.outDir, o.salt);
-  const { version, template } = loadTemplate();
+  const folder = openOutputFolder(o.outDir, o.salt);
+  const waiting = folder.waitingSeeds();
+
+  // Which download lands on which Seed is this command's decision: it sorts
+  // filesystem timestamps, which the module has never seen.
   const files = readdirSync(o.inDir)
     .filter((f) => EXT.has(extname(f).toLowerCase()))
     .map((f) => ({ f, t: statSync(join(o.inDir, f)).mtimeMs }))
@@ -29,9 +50,9 @@ export async function importImages(o: ImportOptions) {
 
   let seeds: number[];
   if (o.start !== undefined) {
-    seeds = files.map((_, i) => o.start! + i);
+    seeds = namedSeeds(folder, o.start, files.length, !o.dryRun);
   } else {
-    seeds = pendingSeeds(o.outDir);
+    seeds = waiting;
     if (files.length > seeds.length) {
       throw new Error(
         `${files.length} images but only ${seeds.length} seeds waiting for one. Run "prompts" first.`,
@@ -51,15 +72,11 @@ export async function importImages(o: ImportOptions) {
     console.log(`${pad(seed)}  ${files[i]}  ${meta.width}x${meta.height}${note}`);
 
     if (o.dryRun) continue;
-    if (existsSync(join(o.outDir, `${pad(seed)}.png`))) {
+    if (folder.hasFrame(seed)) {
       console.log(`       skipped, ${pad(seed)}.png already exists`);
       continue;
     }
-    await saveImage(readFileSync(src), seed, o);
-    logManifest(o.outDir, {
-      seed, version, salt: o.salt, source: "manual", file: files[i],
-      prompt: buildPrompt(template, seed, o.salt).trim(), status: "ok",
-    });
+    await folder.writeFrame({ seed, buffer: readFileSync(src), source: "manual", file: files[i] });
     imported++;
   }
   console.log(o.dryRun ? "\nDry run, nothing written." : `\nImported ${imported} into ${o.outDir}/`);

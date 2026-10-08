@@ -1,27 +1,21 @@
 import "dotenv/config";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { pad, pendingSeeds, readCursor } from "./common";
+import { pad } from "./common";
+import { openOutputFolder } from "./output-folder";
 
 const outDir = process.argv.slice(2).filter((a) => a !== "--")[0] ?? "out";
-const next = readCursor(outDir);
-const pending = pendingSeeds(outDir);
-const done = next - 1 - pending.length;
-
-let failed = 0;
-const manifest = join(outDir, "manifest.jsonl");
-if (existsSync(manifest)) {
-  const last = new Map<number, string>();
-  for (const l of readFileSync(manifest, "utf8").trim().split("\n"))
-    if (l) {
-      const r = JSON.parse(l);
-      last.set(r.seed, r.status);
-    }
-  failed = [...last.values()].filter((s) => s === "failed").length;
+const folder = openOutputFolder(outDir, (process.env.SEED_SALT ?? "").trim());
+// One read of the folder answers every question below, including the failed
+// count. A folder the module calls unusable stops the command rather than
+// reporting numbers it cannot stand behind.
+const state = folder.status();
+if (state.problem) {
+  console.error(state.problem);
+  process.exit(1);
 }
+const waiting = folder.waitingSeeds();
 
-console.log(`Seed salt       ${(process.env.SEED_SALT ?? "").trim() ? "set" : "not set"}`);
-console.log(`Next new seed   ${next}`);
-console.log(`Images done     ${done}`);
-console.log(`Waiting         ${pending.length}${pending.length ? `  (${pad(pending[0])} to ${pad(pending[pending.length - 1])})` : ""}`);
-if (failed) console.log(`Last attempt failed for ${failed} seeds, they run first next time`);
+console.log(`Seed salt       ${state.saltSet ? "set" : "not set"}`);
+console.log(`Next new seed   ${state.next}`);
+console.log(`Images done     ${state.done}`);
+console.log(`Waiting         ${waiting.length}${waiting.length ? `  (${pad(waiting[0])} to ${pad(waiting[waiting.length - 1])})` : ""}`);
+if (state.failed) console.log(`Last attempt failed for ${state.failed} seeds, they run first next time`);
