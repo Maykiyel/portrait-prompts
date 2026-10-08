@@ -2,8 +2,7 @@ import "dotenv/config";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
 import sharp from "sharp";
-import { pad } from "./common";
-import { openOutputFolder, type OutputFolder } from "./output-folder";
+import { openOutputFolder, seedLabel, type OutputFolder } from "./output-folder";
 
 export type ImportOptions = {
   inDir: string;
@@ -69,11 +68,11 @@ export async function importImages(o: ImportOptions) {
     const ratio = (meta.width ?? 1) / (meta.height ?? 1);
     const offRatio = Math.abs(ratio / (2 / 3) - 1) > 0.06;
     const note = offRatio ? "  <-- not 2:3, the crop will cut the sides or top" : "";
-    console.log(`${pad(seed)}  ${files[i]}  ${meta.width}x${meta.height}${note}`);
+    console.log(`${seedLabel(seed)}  ${files[i]}  ${meta.width}x${meta.height}${note}`);
 
     if (o.dryRun) continue;
     if (folder.hasFrame(seed)) {
-      console.log(`       skipped, ${pad(seed)}.png already exists`);
+      console.log(`       skipped, ${seedLabel(seed)}.png already exists`);
       continue;
     }
     await folder.writeFrame({ seed, buffer: readFileSync(src), source: "manual", file: files[i] });

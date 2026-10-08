@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
 import { keys, useJob, useStartJob, useStatus } from "@/lib/queries";
+import { seedLabel } from "@/lib/text";
 
 const models = [
   { value: "flash", label: "Flash (default)" },
@@ -162,7 +163,7 @@ export function Generate() {
             <ul className="mt-4 divide-y text-sm">
               {state.log.map((l) => (
                 <li key={`${l.seed}-${l.ok}`} className="flex gap-3 py-1.5">
-                  <span className="w-14 shrink-0 tabular-nums">{String(l.seed).padStart(5, "0")}</span>
+                  <span className="w-14 shrink-0 tabular-nums">{seedLabel(l.seed)}</span>
                   <span className={l.ok ? "text-done" : "text-destructive"}>{l.ok ? "Done" : (l.message ?? "Failed")}</span>
                 </li>
               ))}

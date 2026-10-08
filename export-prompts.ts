@@ -1,7 +1,6 @@
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
-import { pad } from "./common";
-import { openOutputFolder } from "./output-folder";
+import { openOutputFolder, seedLabel } from "./output-folder";
 
 function arg(name: string, fallback: string) {
   const i = process.argv.indexOf(name);
@@ -31,7 +30,7 @@ const esc = (s: string) =>
 const cards = seeds.map((seed) => {
   const p = folder.promptFor(seed, useNegative);
   return `<article data-seed="${seed}">
-  <header><label><input type="checkbox"> <b>${pad(seed)}</b></label><button type="button">Copy</button></header>
+  <header><label><input type="checkbox"> <b>${seedLabel(seed)}</b></label><button type="button">Copy</button></header>
   <pre>${esc(p)}</pre>
 </article>`;
 }).join("\n");

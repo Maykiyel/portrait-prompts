@@ -10,9 +10,7 @@ import { PageHeader } from "@/components/page-header";
 import { QueryError } from "@/components/query-error";
 import { fileUrl, thumbUrl } from "@/lib/api";
 import { useImages, useRejectImage } from "@/lib/queries";
-import { copyText } from "@/lib/text";
-
-const frame = (seed: number) => String(seed).padStart(5, "0");
+import { copyText, seedLabel } from "@/lib/text";
 
 function FrameDetail({ image, hasNewer, hasOlder, go, onGone }: { image: ImageItem; hasNewer: boolean; hasOlder: boolean; go: (d: -1 | 1) => void; onGone: () => void }) {
   const reject = useRejectImage();
@@ -20,10 +18,10 @@ function FrameDetail({ image, hasNewer, hasOlder, go, onGone }: { image: ImageIt
 
   return (
     <div className="grid gap-5 sm:grid-cols-[minmax(0,17rem)_1fr]">
-      <img src={fileUrl(image.seed, image.updatedAt)} alt={`Frame ${frame(image.seed)}`} className="aspect-[2/3] w-full rounded-md border object-cover" />
+      <img src={fileUrl(image.seed, image.updatedAt)} alt={`Frame ${seedLabel(image.seed)}`} className="aspect-[2/3] w-full rounded-md border object-cover" />
       <div className="flex min-w-0 flex-col gap-4">
         <div>
-          <DialogTitle className="tabular-nums">Frame {frame(image.seed)}</DialogTitle>
+          <DialogTitle className="tabular-nums">Frame {seedLabel(image.seed)}</DialogTitle>
           <DialogDescription className="mt-1">
             {image.source === "manual" ? "Imported by hand" : image.source === "api" ? `Made with ${image.model ?? "the API"}` : "Source unknown"}, prompt template {image.version}.
           </DialogDescription>
@@ -69,7 +67,7 @@ function FrameDetail({ image, hasNewer, hasOlder, go, onGone }: { image: ImageIt
         <div className="border-t pt-3">
           {confirming ? (
             <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="text-muted-foreground">Delete this image and put {frame(image.seed)} back in your prompts?</span>
+              <span className="text-muted-foreground">Delete this image and put {seedLabel(image.seed)} back in your prompts?</span>
               <Button
                 size="sm"
                 variant="destructive"
@@ -77,7 +75,7 @@ function FrameDetail({ image, hasNewer, hasOlder, go, onGone }: { image: ImageIt
                 onClick={() =>
                   reject.mutate(image.seed, {
                     onSuccess: () => {
-                      toast.success(`Prompt ${frame(image.seed)} is waiting again`);
+                      toast.success(`Prompt ${seedLabel(image.seed)} is waiting again`);
                       onGone();
                     },
                   })
@@ -144,7 +142,7 @@ export function Gallery() {
                 type="button"
                 onClick={() => setSelected(img.seed)}
                 className="group block w-full text-left outline-none"
-                aria-label={`Open frame ${frame(img.seed)}`}
+                aria-label={`Open frame ${seedLabel(img.seed)}`}
               >
                 <img
                   src={thumbUrl(img.seed, 320, img.updatedAt)}
@@ -152,7 +150,7 @@ export function Gallery() {
                   loading="lazy"
                   className="aspect-[2/3] w-full rounded-sm border bg-muted object-cover group-focus-visible:ring-[3px] group-focus-visible:ring-ring/50"
                 />
-                <span className="mt-1 block text-xs text-muted-foreground tabular-nums">{frame(img.seed)}</span>
+                <span className="mt-1 block text-xs text-muted-foreground tabular-nums">{seedLabel(img.seed)}</span>
               </button>
             </li>
           ))}

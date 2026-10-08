@@ -1,6 +1,5 @@
 import "dotenv/config";
-import { pad } from "./common";
-import { openOutputFolder } from "./output-folder";
+import { openOutputFolder, seedLabel } from "./output-folder";
 
 const outDir = process.argv.slice(2).filter((a) => a !== "--")[0] ?? "out";
 const folder = openOutputFolder(outDir, (process.env.SEED_SALT ?? "").trim());
@@ -17,5 +16,5 @@ const waiting = folder.waitingSeeds();
 console.log(`Seed salt       ${state.saltSet ? "set" : "not set"}`);
 console.log(`Next new seed   ${state.next}`);
 console.log(`Images done     ${state.done}`);
-console.log(`Waiting         ${waiting.length}${waiting.length ? `  (${pad(waiting[0])} to ${pad(waiting[waiting.length - 1])})` : ""}`);
+console.log(`Waiting         ${waiting.length}${waiting.length ? `  (${seedLabel(waiting[0])} to ${seedLabel(waiting[waiting.length - 1])})` : ""}`);
 if (state.failed) console.log(`Last attempt failed for ${state.failed} seeds, they run first next time`);

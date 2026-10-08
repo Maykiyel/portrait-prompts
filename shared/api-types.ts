@@ -1,3 +1,14 @@
+// The module that owns the output folder defines its own types. The three below
+// are the wire shapes that are genuinely identical to it, so they are named here
+// rather than restated; nothing in the core imports anything from this file, and
+// these are type-only imports, so the browser never pulls the module in and with
+// it the image library.
+import type { FrameRecord, ImportedFrame, PromptItem } from "../output-folder";
+
+export type ImageItem = FrameRecord;
+export type ImportResult = ImportedFrame;
+export type { PromptItem };
+
 export type Status = {
   version: string;
   /** Null when the folder cannot be read. Never a guess at Seed 1: see the ADR. */
@@ -11,27 +22,8 @@ export type Status = {
   problem?: string;
 };
 
-export type PromptItem = { seed: number; prompt: string };
-
 export type PromptsResponse = {
   items: PromptItem[];
-};
-
-export type ImageItem = {
-  seed: number;
-  version: string;
-  source: "api" | "manual" | "unknown";
-  model?: string;
-  prompt: string;
-  updatedAt: string;
-};
-
-export type ImportResult = {
-  seed: number;
-  file: string;
-  ok: boolean;
-  warning?: string;
-  error?: string;
 };
 
 export type ImportResponse = { results: ImportResult[] };

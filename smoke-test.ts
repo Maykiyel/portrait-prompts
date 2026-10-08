@@ -5,11 +5,10 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
-import { claimSeeds, issueSeeds, loadTemplate, readCursor } from "./common";
 import { ArchiveError } from "./errors";
 import { defaults, run } from "./generate";
 import { importImages } from "./import-images";
-import { openOutputFolder } from "./output-folder";
+import { openOutputFolder, type FileForImport } from "./output-folder";
 import { buildPrompt, pools } from "./sampler";
 
 const good = async () =>
@@ -22,37 +21,147 @@ const check = (name: string, cond: boolean) => {
   return cond;
 };
 
+// The three ways a check observes the module: a stream it was handed, the code on
+// an error it raised, or a value it returned. Nothing here reads the archive.
+const streamBytes = async (stream: NodeJS.ReadableStream) => {
+  const parts: Buffer[] = [];
+  for await (const part of stream) parts.push(Buffer.from(part));
+  return Buffer.concat(parts);
+};
+const errorCode = (action: () => unknown) => {
+  try {
+    action();
+    return "no error";
+  } catch (err) {
+    return err instanceof ArchiveError ? err.code : `not an ArchiveError: ${String(err)}`;
+  }
+};
+const asyncCode = async (action: () => Promise<unknown>) => {
+  try {
+    await action();
+    return "no error";
+  } catch (err) {
+    return err instanceof ArchiveError ? err.code : String(err);
+  }
+};
+
 const out = "out-smoke";
 const inDir = "in-smoke";
 rmSync(out, { recursive: true, force: true });
 rmSync(inDir, { recursive: true, force: true });
 const results: boolean[] = [];
 
-// API path with the counter
+// -----------------------------------------------------------------------------
+// The seam audit. Every other check in this file asks the output-folder module
+// questions; this block reads source text instead, and it is here to keep the
+// ownership claim global. Anything that can name one of the archive's private
+// names, or pick up a filesystem without a reason on record, fails the run.
+const repoRoot = process.cwd();
+const notSource = (name: string) =>
+  name === "node_modules" || name === "dist" || name.startsWith("out") || name.startsWith("in-smoke");
+const sourceFiles = (dir = repoRoot, into: string[] = []): string[] => {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!notSource(entry.name)) sourceFiles(full, into);
+    } else if (/\.tsx?$/.test(entry.name)) into.push(full);
+  }
+  return into;
+};
+const repoPath = (file: string) => file.slice(repoRoot.length + 1).replace(/\\/g, "/");
+// The module that owns the folder, and this harness that audits it, are exempt.
+const OWNER = "output-folder.ts";
+const audited = sourceFiles().filter((f) => repoPath(f) !== OWNER && repoPath(f) !== "smoke-test.ts");
+const sourceText = new Map(audited.map((f) => [repoPath(f), readFileSync(f, "utf8")] as const));
+
+// The only files allowed to reach for a filesystem, each for a folder the module
+// does not own. A fourth one has to be added here on purpose, with a reason.
+const ALLOWED_FILESYSTEM_USERS: Record<string, string> = {
+  "export-prompts.ts": "writes the HTML page the user opens in a browser",
+  "import-images.ts": "reads the downloads the user hands it, and sorts their timestamps",
+  "server/index.ts": "serves the built UI out of web/dist",
+};
+const reachesForFilesystem = (s: string) => /from\s+"node:(?:fs|path)"|from\s+"sharp"/.test(s);
+
+// A private name can only be in a file that is not the owner if that file knows
+// something about the archive's layout, which is exactly what it must not know.
+// The browser is the one exemption: it shows a Seed label and never names a
+// file, so it keeps its label in web/src/lib/text.ts rather than reaching the
+// module, which would drag the image library into the bundle.
+const BROWSER_LABEL_HOME = "web/src/lib/text.ts";
+// The core: the command line, the module and its siblings. The HTTP contract types
+// belong to the server, so nothing in here may name them.
+const CORE = ["generate.ts", "import-images.ts", "export-prompts.ts", "status.ts", "sampler.ts", "errors.ts", "gemini.ts"];
+const PRIVATE_NAMES: [what: string, appliesTo: (file: string) => boolean, pattern: RegExp][] = [
+  ["the Seed counter file", () => true, /cursor\.json/],
+  ["the Manifest file", () => true, /manifest\.jsonl/],
+  ["the Thumbnail folder", () => true, /["'`]thumbs["'`]/],
+  ["a Frame filename", () => true, /\.padStart\([^)]*\)\}\.(?:png|webp)/],
+  ["a Seed label", (f) => f !== BROWSER_LABEL_HOME, /padStart\(/],
+  ["the deleted filesystem helpers", () => true, /from\s+["'][^"']*\/common["']/],
+  ["an error class carrying an HTTP status", () => true, /\bApiError\b/],
+  ["the HTTP contract types", (f) => CORE.includes(f), /api-types/],
+];
+const offenders: string[] = [
+  ...[...sourceText].filter(([, s]) => reachesForFilesystem(s)).map(([f]) => [f] as const)
+    .filter(([f]) => !(f in ALLOWED_FILESYSTEM_USERS))
+    .map(([f]) => `${f} reaches for a filesystem with no reason on record`),
+  ...PRIVATE_NAMES.flatMap(([what, appliesTo, pattern]) =>
+    [...sourceText].filter(([f, s]) => appliesTo(f) && pattern.test(s)).map(([f]) => `${f} names ${what}`)),
+];
+results.push(check("nothing reaches the output folder except through output-folder.ts", offenders.length === 0));
+for (const line of offenders) console.log(`      ${line}`);
+
+// The four command-line entry points ask the module for the folder they work on.
+const ENTRY_POINTS = ["generate.ts", "import-images.ts", "export-prompts.ts", "status.ts"];
+results.push(check(
+  "every command-line entry point opens the module",
+  ENTRY_POINTS.every((f) => sourceText.get(f)?.includes("openOutputFolder(") === true),
+));
+
+// API path with the counter. Every line below asks the module; none of them reads
+// the counter file, lists the directory or opens a Frame by path.
+const apiFolder = openOutputFolder(out, "");
 await run({ ...defaults, count: 4, outDir: out, salt: "" }, good);
-results.push(check("first run makes seeds 1 to 4, counter at 5", readCursor(out) === 5));
+results.push(check(
+  "first run makes seeds 1 to 4, counter at 5",
+  apiFolder.status().next === 5 && apiFolder.listFrames().map((f) => f.seed).join() === "4,3,2,1",
+));
 await run({ ...defaults, count: 2, outDir: out, salt: "" }, good);
-results.push(check("second run continues at 5 and 6", readdirSync(out).includes("00006.png") && readCursor(out) === 7));
+results.push(check("second run continues at 5 and 6", apiFolder.hasFrame(6) && apiFolder.status().next === 7));
 await run({ ...defaults, count: 2, outDir: out, salt: "" }, bad);
-results.push(check("failed run uses 7 and 8, no images", !readdirSync(out).includes("00007.png") && readCursor(out) === 9));
+results.push(check(
+  "failed run uses 7 and 8, no images",
+  !apiFolder.hasFrame(7) && !apiFolder.hasFrame(8) && apiFolder.status().next === 9,
+));
+results.push(check(
+  "a failed run records an Attempt for every Seed it tried",
+  apiFolder.status().failed === 2 && apiFolder.waitingSeeds().join() === "7,8",
+));
 await run({ ...defaults, count: 2, outDir: out, salt: "" }, good);
 results.push(
   check(
     "next run retries 7 and 8 and does not advance",
-    readdirSync(out).includes("00007.png") && readdirSync(out).includes("00008.png") && readCursor(out) === 9,
+    apiFolder.hasFrame(7) && apiFolder.hasFrame(8) && apiFolder.status().next === 9,
   ),
 );
-const meta = await sharp(`${out}/00001.png`).metadata();
+results.push(check(
+  "the last Attempt is what counts, so the retry clears both failures",
+  apiFolder.status().failed === 0 && apiFolder.status().done === 8 && apiFolder.waitingSeeds().join() === "",
+));
+const meta = await sharp(await streamBytes(apiFolder.readFrame(1))).metadata();
 results.push(check("final image is 768x1152", meta.width === 768 && meta.height === 1152));
-const lines = readFileSync(`${out}/manifest.jsonl`, "utf8").trim().split("\n");
-results.push(check("manifest logs every attempt", lines.length === 10));
 await run({ ...defaults, count: 3, outDir: out, dryRun: true, salt: "" }, good);
-results.push(check("dry run leaves counter alone", readCursor(out) === 9));
+results.push(check(
+  "dry run leaves counter alone",
+  apiFolder.status().next === 9 && apiFolder.status().done === 8 && apiFolder.waitingSeeds().join() === "",
+));
 
 // Manual path with the counter
 const out2 = "out-smoke2";
 rmSync(out2, { recursive: true, force: true });
-claimSeeds(out2, "", 3); // what the prompts command does
+const manual = openOutputFolder(out2, "");
+manual.claimSeeds(3); // what the prompts command does
 mkdirSync(inDir);
 for (const [i, name] of ["b.png", "a.png"].entries()) {
   const p = `${inDir}/${name}`;
@@ -60,9 +169,13 @@ for (const [i, name] of ["b.png", "a.png"].entries()) {
   utimesSync(p, new Date(2026, 0, 1, 0, i), new Date(2026, 0, 1, 0, i)); // b is oldest
 }
 await importImages({ inDir, outDir: out2, width: 768, height: 1152, dryRun: false, salt: "" });
-const rows = readFileSync(`${out2}/manifest.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-results.push(check("import fills seeds 1 and 2 by download time", rows[0].seed === 1 && rows[0].file === "b.png" && rows[1].seed === 2));
-results.push(check("seed 3 still waiting", claimSeeds(out2, "", 2, false).join() === "3,4"));
+// Which download landed on which Seed is the command's own answer, and the Frame
+// records confirm it: b.png is the older download, so it is Seed 1.
+results.push(check(
+  "import fills seeds 1 and 2 by download time",
+  manual.listFrames().map((f) => f.seed).join() === "2,1" && manual.listFrames().every((f) => f.source === "manual"),
+));
+results.push(check("seed 3 still waiting", manual.claimSeeds(2, false).join() === "3,4"));
 let threw = false;
 try {
   await importImages({ inDir, outDir: "out-smoke3", width: 768, height: 1152, dryRun: false, salt: "" });
@@ -71,55 +184,54 @@ try {
 }
 results.push(check("import refuses images with no waiting seeds", threw));
 
-// Seed counter: a missing one is a fresh run, an unreadable one is refused.
+// Seed counter: a missing one is a fresh run, an unreadable one is refused. The
+// writes below are fixture setup; every assertion asks the module.
 const counterDir = "out-smoke5";
 rmSync(counterDir, { recursive: true, force: true });
 mkdirSync(counterDir, { recursive: true });
-results.push(check("a folder with no counter reads as seed 1", readCursor(counterDir) === 1));
-results.push(check("a folder with no counter still hands out seed 1", claimSeeds(counterDir, "", 1).join() === "1"));
+const counter = openOutputFolder(counterDir, "");
+results.push(check("a folder with no counter reads as seed 1", counter.status().next === 1));
+results.push(check("a folder with no counter still hands out seed 1", counter.claimSeeds(1).join() === "1"));
 writeFileSync(join(counterDir, "cursor.json"), "{ this is not json");
-const readCounter = (dir: string) => {
-  try {
-    readCursor(dir);
-    return "";
-  } catch (err) {
-    return err instanceof ArchiveError ? err.code : `not an ArchiveError: ${String(err)}`;
-  }
-};
-results.push(check("an unreadable counter is refused by code", readCounter(counterDir) === "unreadable-counter"));
-let claimedFromBroken: string;
-try {
-  claimedFromBroken = claimSeeds(counterDir, "", 1).join();
-} catch (err) {
-  claimedFromBroken = err instanceof ArchiveError ? err.code : `not an ArchiveError: ${String(err)}`;
-}
-results.push(check("the salt guard is not bypassed by a broken counter", claimedFromBroken === "unreadable-counter"));
+results.push(check(
+  "an unreadable counter is refused by code",
+  errorCode(() => counter.waitingSeeds()) === "unreadable-counter",
+));
+results.push(check(
+  "the salt guard is not bypassed by a broken counter",
+  errorCode(() => counter.claimSeeds(1)) === "unreadable-counter",
+));
 writeFileSync(join(counterDir, "cursor.json"), JSON.stringify({ next: "not a number" }));
-results.push(check("a counter with no usable next is refused", readCounter(counterDir) === "unreadable-counter"));
-// A reader running against a folder that is being written to must never see half a counter.
-// Two readers loop for three seconds while this process keeps handing out Seeds.
+results.push(check(
+  "a counter with no usable next is refused",
+  errorCode(() => counter.waitingSeeds()) === "unreadable-counter",
+));
+// A reader running against a folder that is being written to must never be told
+// the folder has no state. Two readers, in their own processes and each holding
+// its own open module, loop for three seconds while this process hands out Seeds.
+// They ask the module for the status, so a torn counter shows up as a missing or
+// unusable next Seed rather than as Seed 1.
 const writerDir = "out-smoke6";
 rmSync(writerDir, { recursive: true, force: true });
-claimSeeds(writerDir, "", 1); // the counter now exists for the readers to race against
+const writer = openOutputFolder(writerDir, "");
+writer.claimSeeds(1); // the counter now exists for the readers to race against
+const READER = `const { pathToFileURL } = require("node:url");
+ void (async () => {
+   const { openOutputFolder } = await import(pathToFileURL(process.argv[1]).href);
+   const folder = openOutputFolder(process.argv[2], "");
+   let reads = 0, broken = 0;
+   const until = Date.now() + 3000;
+   while (Date.now() < until) {
+     reads++;
+     const s = folder.status();
+     if (!Number.isInteger(s.next) || (s.next ?? 0) < 1 || s.problem) broken++;
+   }
+   process.stdout.write(JSON.stringify({ reads, broken }));
+ })();`;
 const readers = [0, 1].map(() =>
-  execFile(process.execPath, [
-    "-e",
-    `const { readFileSync } = require("node:fs");
-     const file = process.argv[1];
-     let reads = 0, broken = 0;
-     const until = Date.now() + 3000;
-     while (Date.now() < until) {
-       reads++;
-       try {
-         const v = JSON.parse(readFileSync(file, "utf8"));
-         if (!Number.isInteger(v.next) || v.next < 1) broken++;
-       } catch {
-         broken++;
-       }
-     }
-     process.stdout.write(JSON.stringify({ reads, broken }));`,
-    join(writerDir, "cursor.json"),
-  ]),
+  execFile(process.execPath, ["--import", "tsx", "-e", READER, join(repoRoot, "output-folder.ts"), writerDir], {
+    cwd: repoRoot,
+  }),
 );
 const reports = Promise.all(
   readers.map(
@@ -132,18 +244,30 @@ const reports = Promise.all(
   ),
 );
 const writingUntil = Date.now() + 2800;
-while (Date.now() < writingUntil) issueSeeds(writerDir, "", 1);
+while (Date.now() < writingUntil) writer.issueSeeds(1);
 const torn = await reports;
+if (!torn.every((r) => r.reads > 100 && r.broken === 0))
+  console.log(`      readers reported ${JSON.stringify(torn)}`);
+// The bar is a hundred real reads per reader, not a thousand: a status call walks
+// the folder, so it is far slower than reading one file, and the point is that
+// every one of those reads agreed the folder had a usable next Seed.
 results.push(check(
   "a reader racing the writer never sees a partial counter",
-  torn.every((r) => r.reads > 1000 && r.broken === 0),
+  torn.every((r) => r.reads > 100 && r.broken === 0),
 ));
 rmSync(writerDir, { recursive: true, force: true });
 rmSync(counterDir, { recursive: true, force: true });
 
 
-// Salt
-const { template } = loadTemplate();
+// Salt and the Attribute pools. These drive sampler.ts, the sibling module that
+// receives the salt rather than reading it, so they need the Prompt template as
+// input. The Prompt files are not part of the archive: the archive checks below
+// go through the module and never touch them.
+const promptFiles = () => {
+  const raw = readFileSync("template.txt", "utf8");
+  return { version: raw.match(/^#\s*(.+)\n/)?.[1]?.trim() ?? "unversioned", template: raw.replace(/^#.*\n/, "") };
+};
+const { template } = promptFiles();
 delete process.env.SEED_SALT;
 results.push(check("same seed and salt give the same prompt", buildPrompt(template, 5, "a") === buildPrompt(template, 5, "a")));
 results.push(check("different salts give different prompts", buildPrompt(template, 5, "a") !== buildPrompt(template, 5, "b")));
@@ -158,15 +282,12 @@ const plain = createHash("sha256").update(buildPrompt(template, 9, "")).digest("
 results.push(check("no salt matches the plain seed", plain === "210a57d95ba0d439294b0ea609484ea277514f5353b877097d8f96423df558ab"));
 const guardDir = "out-smoke4";
 rmSync(guardDir, { recursive: true, force: true });
-claimSeeds(guardDir, "", 2); // started with no salt
-let guarded = false;
-try {
-  claimSeeds(guardDir, "changed", 2);
-} catch {
-  guarded = true;
-}
+openOutputFolder(guardDir, "").claimSeeds(2); // started with no salt
+results.push(check(
+  "changing the salt mid-run is blocked",
+  errorCode(() => openOutputFolder(guardDir, "changed").claimSeeds(2)) === "salt-mismatch",
+));
 rmSync(guardDir, { recursive: true, force: true });
-results.push(check("changing the salt mid-run is blocked", guarded));
 
 // Template and pools
 const placeholders = new Set([...template.matchAll(/\{(\w+)\}/g)].map((m) => m[1]));
@@ -179,32 +300,10 @@ const slips = prompts.filter((p) => /\{|\}|  | \.|,,|\b(a|an) (a|an)\b|\ba [aeio
 results.push(check("no grammar or placeholder slips in 500 prompts", slips.length === 0));
 if (slips.length) console.log("  e.g.", slips[0].split("\n")[0]);
 
-// The new output-folder interface, on real files in a throwaway folder. Existing
-// callers above are intentionally unchanged until the migration tickets.
+// The module's interface, on real files in a throwaway folder. Only the fixture
+// setup below writes to disk; every assertion asks the module.
 const tempBase = process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "Temp", "opencode") : tmpdir();
 const fixture = mkdtempSync(join(tempBase, "portrait-prompts-"));
-const originalCwd = process.cwd();
-const streamBytes = async (stream: NodeJS.ReadableStream) => {
-  const parts: Buffer[] = [];
-  for await (const part of stream) parts.push(Buffer.from(part));
-  return Buffer.concat(parts);
-};
-const errorCode = (action: () => unknown) => {
-  try {
-    action();
-    return "no error";
-  } catch (err) {
-    return err instanceof ArchiveError ? err.code : String(err);
-  }
-};
-const asyncCode = async (action: () => Promise<unknown>) => {
-  try {
-    await action();
-    return "no error";
-  } catch (err) {
-    return err instanceof ArchiveError ? err.code : String(err);
-  }
-};
 try {
   // Only fixture setup writes these files; the assertions below read through the module.
   writeFileSync(join(fixture, "template.txt"), "# fixture-v1\nPortrait {age}.");
@@ -254,6 +353,16 @@ try {
   folder.rejectFrame(2);
   results.push(check("Rejection returns a Seed to waiting", !folder.hasFrame(2) && folder.waitingSeeds().includes(2) && folder.listFrames().map((frame) => frame.seed).join() === "5"));
   results.push(check("a second Rejection raises the missing-Frame code", errorCode(() => folder.rejectFrame(2)) === "missing-frame"));
+  // Which download lands on which Seed is the adapter's decision, so the module
+  // has no download time to match on. These two lines are a compile-time check:
+  // drop the error on the second and typecheck fails.
+  const nameOnly: FileForImport = { name: "download.png", buffer: img };
+  // @ts-expect-error the module must not accept a download time to match on
+  const withTime: FileForImport = { name: "download.png", buffer: img, mtimeMs: Date.now() };
+  results.push(check(
+    "an import asks the module for Frames, never for a download time",
+    nameOnly.name === "download.png" && withTime.name === "download.png",
+  ));
   // A malformed counter is a fixture for the unreadable-state path; assertions
   // still ask the module, never inspect the on-disk representation.
   writeFileSync(join(fixture, "archive", "cursor.json"), "{ corrupt");
@@ -261,7 +370,7 @@ try {
   results.push(check("status reports an unusable folder without inventing a next Seed",
     folder.status().next === null && folder.status().waiting === null && !!folder.status().problem));
 } finally {
-  process.chdir(originalCwd);
+  process.chdir(repoRoot);
   rmSync(fixture, { recursive: true, force: true });
 }
 
@@ -304,7 +413,6 @@ try {
   process.env.GEMINI_API_KEY = "";
   const { createApp, STATUS_BY_CODE } = await import("./server/index");
   const { refusalFor } = await import("./server/jobs");
-  const store = await import("./server/store");
   const codes = Object.keys(STATUS_BY_CODE) as import("./errors").ArchiveErrorCode[];
   const seeded = openOutputFolder(routeDir, "route-salt");
   seeded.issueSeeds(3); // Seeds 1 to 3 are waiting
@@ -335,7 +443,11 @@ try {
       reworded.status === STATUS_BY_CODE[code] && body.error === `a message nobody wrote: ${code}`,
     ));
   }
-  results.push(check("the data module exports no error class carrying a status", !("ApiError" in store)));
+  const raised = new ArchiveError("invalid-count", "a message nobody wrote");
+  results.push(check(
+    "the core failure carries a code and no HTTP status",
+    "code" in raised && raised.code === "invalid-count" && !("status" in raised),
+  ));
 
   const status = await api.request("/api/status");
   const told = (await status.json()) as { next: number | null; waiting: number | null; done: number; saltSet: boolean; hasApiKey: boolean; problem?: string };
@@ -408,7 +520,7 @@ for (const d of [out, out2, inDir, "out-smoke3"]) rmSync(d, { recursive: true, f
 // The four entry points read through the module. These checks compare each
 // command's own output, byte for byte, with what it printed before the
 // migration, and cross-check it against what the module says about the folder.
-const cliVersion = loadTemplate().version;
+const cliVersion = promptFiles().version;
 const captureCli = async (action: () => Promise<unknown> | unknown) => {
   const captured: string[] = [];
   const log = console.log;
@@ -428,7 +540,7 @@ const spawnCli = (script: string, args: string[]) =>
   new Promise<{ code: number; output: string }>((resolve) => {
     let text = "";
     const child = execFile(process.execPath, ["--import", "tsx", script, ...args], {
-      cwd: originalCwd,
+      cwd: repoRoot,
       env: { ...process.env, SEED_SALT: "", GEMINI_API_KEY: "" },
     });
     child.stdout?.on("data", (c: Buffer) => (text += c.toString()));
@@ -443,16 +555,6 @@ cliFolder.issueSeeds(6);
 await cliFolder.writeFrame({ seed: 1, buffer: await good(), model: "fixture-model", prompt: cliFolder.promptFor(1, true) });
 await cliFolder.writeFrame({ seed: 2, buffer: await good(), model: "fixture-model", prompt: cliFolder.promptFor(2, true) });
 cliFolder.recordAttempt({ seed: 3, status: "failed", error: "fixture failure" });
-
-// The entry points ask the module. Only the module asks the filesystem about a Frame.
-const entryPoints = ["generate.ts", "import-images.ts", "export-prompts.ts", "status.ts"];
-const entrySource = entryPoints.map((f) => readFileSync(join(originalCwd, f), "utf8"));
-results.push(check(
-  "every entry point goes through the module and none asks the filesystem about a Frame",
-  entrySource.every((s) => s.includes("openOutputFolder(")) &&
-    entrySource.every((s) => !s.includes("existsSync")) &&
-    entrySource.every((s) => !/pendingSeeds|readCursor|saveImage|logManifest|assertSalt/.test(s)),
-));
 
 // status: the same lines, and the same failed count as the module.
 const statusOut = await spawnCli("status.ts", [cliOut]);
@@ -520,7 +622,10 @@ results.push(check(
   "an import leaves a 768x1152 Frame, keeps the Raw image and records the Attempt",
   (await sharp(await streamBytes(impFolder.readFrame(1))).metadata()).width === 768 &&
     (await sharp(await streamBytes(impFolder.readFrame(1, true))).metadata()).width === 900 &&
-    readFileSync(join(impOut, "manifest.jsonl"), "utf8").trim().split("\n").length === 2,
+    // The Attempt is on the record: every Frame knows its Prompt version and text,
+    // and nothing is counted as a failure.
+    impFolder.status().failed === 0 &&
+    impFolder.listFrames().every((f) => f.version === impFolder.status().version && f.prompt.length > 0),
 ));
 
 // import with nothing waiting is refused with the same words.

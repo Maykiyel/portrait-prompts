@@ -1,15 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import { Readable } from "node:stream";
-import type { ReadStream } from "node:fs";
 import { Hono, type Context } from "hono";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import "dotenv/config";
 import type { GenerateRequest } from "../shared/api-types";
 import { ArchiveError, type ArchiveErrorCode } from "../errors";
+import { seedLabel } from "../output-folder";
 import { getJob, refusalFor, startJob } from "./jobs";
 import {
   addPrompts, getPending, getStatus, importFiles, listImages, readFrame, readThumbnail, rejectFrame,
+  type FrameStream,
 } from "./store";
 
 /** The one table that turns a named code into a status. Nothing else chooses one. */
@@ -22,7 +23,7 @@ export const STATUS_BY_CODE: Record<ArchiveErrorCode, 400 | 404 | 409 | 500> = {
   "unreadable-counter": 500,
 };
 
-const send = (c: Context, stream: ReadStream) => c.body(Readable.toWeb(stream) as ReadableStream);
+const send = (c: Context, stream: FrameStream) => c.body(Readable.toWeb(stream) as ReadableStream);
 
 export function createApp(salt: string): Hono {
   const app = new Hono();
@@ -52,7 +53,7 @@ export function createApp(salt: string): Hono {
     const seed = Number(c.req.param("seed"));
     c.header("Content-Type", "image/png");
     c.header("Cache-Control", "no-cache");
-    if (c.req.query("download") === "1") c.header("Content-Disposition", `attachment; filename="${c.req.param("seed").padStart(5, "0")}.png"`);
+    if (c.req.query("download") === "1") c.header("Content-Disposition", `attachment; filename="${seedLabel(Number(c.req.param("seed")))}.png"`);
     return send(c, readFrame(salt, seed, c.req.query("raw") === "1"));
   });
   api.post("/images/:seed/reject", (c) => {

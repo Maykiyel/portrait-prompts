@@ -79,6 +79,14 @@ type ManifestRow = {
 };
 
 const pad = (seed: number) => String(seed).padStart(5, "0");
+
+/**
+ * The five-digit Seed name, for the places that show one to a person or hand one
+ * to a browser as a download. This module owns the form because it owns the Frame
+ * filenames; nothing else gets to build one.
+ */
+export const seedLabel = (seed: number) => pad(seed);
+
 const invalidSeed = () => new ArchiveError("invalid-seed", "Seed must be a positive whole number");
 const validateSeed = (seed: number) => {
   if (!Number.isSafeInteger(seed) || seed < 1) throw invalidSeed();
