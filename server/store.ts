@@ -1,9 +1,11 @@
-import type { ReadStream } from "node:fs";
 import { openOutputFolder, type OutputFolder } from "../output-folder";
 import type { ImageItem, ImportResult, PromptsResponse, Status } from "../shared/api-types";
 
 /** Where the output folder is. OUT_DIR still decides, as it always has. */
 export const outDir = () => process.env.OUT_DIR ?? "out";
+
+/** The module's stream type, taken from the interface rather than from node:fs. */
+export type FrameStream = ReturnType<OutputFolder["readFrame"]>;
 
 let opened: { root: string; salt: string; folder: OutputFolder } | undefined;
 
@@ -40,10 +42,10 @@ export function addPrompts(salt: string, count: number, useNegative = false): Pr
 export const listImages = (salt: string): ImageItem[] => archive(salt).listFrames();
 
 /** A Frame or its Raw image, as a stream. The folder's location never leaves the module. */
-export const readFrame = (salt: string, seed: number, raw = false): ReadStream =>
+export const readFrame = (salt: string, seed: number, raw = false): FrameStream =>
   archive(salt).readFrame(seed, raw);
 
-export const readThumbnail = (salt: string, seed: number, width: number): Promise<ReadStream> =>
+export const readThumbnail = (salt: string, seed: number, width: number): Promise<FrameStream> =>
   archive(salt).readThumbnail(seed, width);
 
 /** Removes the Frame so its Seed goes back to waiting. The Manifest keeps a record. */

@@ -6,6 +6,14 @@ export function summarize(prompt: string): string {
   return end > 0 ? excerpt.slice(0, end) : excerpt;
 }
 
+/**
+ * The five-digit Seed label the pages show. The output-folder module owns the same
+ * form for filenames and the command line, but it pulls in the image library, so
+ * the browser cannot import it. This is the only place the browser states the rule,
+ * and the smoke test fails if a second copy appears.
+ */
+export const seedLabel = (seed: number) => String(seed).padStart(5, "0");
+
 export async function copyText(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);

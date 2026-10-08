@@ -153,9 +153,10 @@ Model names are `gemini-3.1-flash-lite-image` for `lite`, `gemini-3.1-flash-imag
 
 - `web/src/pages` has the five pages. `web/src/components/ui` has the shadcn components.
 - `web/src/lib` has the API client, query hooks and text helpers. `web/src/stores` has the Zustand stores.
-- `server/index.ts` has the routes. `server/store.ts` reads and writes `out/`. `server/jobs.ts` runs API generation.
-- `shared/api-types.ts` holds types used by both sides.
-- `common.ts`, `sampler.ts`, `generate.ts`, `gemini.ts` and `import-images.ts` are the core, shared by the app and the command line.
+- `server/index.ts` has the routes. `server/store.ts` is a thin client of the output-folder module. `server/jobs.ts` runs API generation.
+- `shared/api-types.ts` holds the wire types both sides use. It re-exports the module's own types where they are genuinely identical.
+- `output-folder.ts` is the only code that reads or writes `out/`. It owns the folder layout, the Seed counter, the manifest and Prompt wording, and answers questions about them through one interface.
+- `sampler.ts` holds the attribute pools and takes the salt as an argument. `generate.ts`, `gemini.ts` and `import-images.ts` are the rest of the core, shared by the app and the command line.
 - `template.txt` and `negative.txt` are the prompt files.
 
 ## Troubleshooting

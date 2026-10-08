@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { PageHeader } from "@/components/page-header";
 import { QueryError } from "@/components/query-error";
 import { useAddPrompts, useImportImages, usePending } from "@/lib/queries";
-import { summarize } from "@/lib/text";
+import { seedLabel, summarize } from "@/lib/text";
 import { cn } from "@/lib/utils";
 import { useImportQueue } from "@/stores/import-queue";
 
@@ -134,7 +134,7 @@ export function ImportPage() {
                       <SelectContent>
                         {waitingSeeds.map((s) => (
                           <SelectItem key={s} value={String(s)} className="tabular-nums">
-                            {String(s).padStart(5, "0")}
+                            {seedLabel(s)}
                           </SelectItem>
                         ))}
                       </SelectContent>

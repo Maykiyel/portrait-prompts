@@ -10,7 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
 import { QueryError } from "@/components/query-error";
 import { useAddPrompts, usePending } from "@/lib/queries";
-import { copyText, summarize } from "@/lib/text";
+import { copyText, seedLabel, summarize } from "@/lib/text";
 import { cn } from "@/lib/utils";
 import { useCopied } from "@/stores/copied";
 import { useSettings } from "@/stores/settings";
@@ -29,7 +29,7 @@ function PromptRow({ seed, prompt }: { seed: number; prompt: string }) {
 
   return (
     <li className={cn("grid grid-cols-[3.5rem_1fr_auto] items-start gap-3 py-3", wasCopied && "opacity-60")}>
-      <span className="pt-0.5 text-sm font-medium tabular-nums">{String(seed).padStart(5, "0")}</span>
+      <span className="pt-0.5 text-sm font-medium tabular-nums">{seedLabel(seed)}</span>
       <div className="min-w-0">
         <p className="text-sm">{summarize(prompt)}</p>
         <button
