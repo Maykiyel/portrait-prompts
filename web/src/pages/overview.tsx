@@ -24,7 +24,10 @@ export function Overview() {
 
   return (
     <>
-      <PageHeader title="Overview" description={`${s.done} images done, ${s.waiting} prompts waiting.`} />
+      <PageHeader
+        title="Overview"
+        description={`${s.done} images done, ${s.waiting === null ? "an unknown number of" : s.waiting} prompts waiting.`}
+      />
 
       {!s.saltSet && s.next === 1 && (
         <Alert variant="warning" className="mb-6">
@@ -40,7 +43,7 @@ export function Overview() {
       )}
 
       <section className="mb-8 rounded-lg border bg-card p-5">
-        {s.waiting > 0 ? (
+        {(s.waiting ?? 0) > 0 ? (
           <>
             <h2 className="text-lg font-semibold">{s.waiting} prompts are waiting for images</h2>
             <p className="mt-1 max-w-prose text-sm text-muted-foreground">
@@ -96,7 +99,7 @@ export function Overview() {
         <dt className="text-muted-foreground">Prompt template</dt>
         <dd>{s.version}</dd>
         <dt className="text-muted-foreground">Next new seed</dt>
-        <dd className="tabular-nums">{s.next}</dd>
+        <dd className="tabular-nums">{s.next ?? "Unknown"}</dd>
         <dt className="text-muted-foreground">Seed salt</dt>
         <dd>{s.saltSet ? "Set" : "Not set"}</dd>
         <dt className="text-muted-foreground">Gemini API key</dt>

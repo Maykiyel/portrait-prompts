@@ -1,19 +1,28 @@
 import type { GenerateRequest, JobState } from "../shared/api-types";
 import { defaults, run } from "../generate";
 import { MODELS } from "../gemini";
-import { ApiError, OUT } from "./store";
+import { outDir } from "./store";
 
 const fresh = (): JobState => ({ status: "idle", total: 0, done: 0, failed: 0, log: [] });
 let job: JobState = fresh();
 
 export const getJob = () => job;
 
+/** Why the Job cannot start. The route turns this into a response, so no error here carries a status. */
+export type Refusal = { status: 400 | 409; message: string };
+
+/** What the Job refuses, in the order it refuses it. Everything the module raises arrives as a code instead. */
+export function refusalFor(current: JobState, hasApiKey: boolean, req: GenerateRequest): Refusal | undefined {
+  if (current.status === "running") return { status: 409, message: "A job is already running" };
+  if (!hasApiKey) return { status: 400, message: "GEMINI_API_KEY is not set. Add it to .env and restart the server." };
+  if (!Number.isInteger(req.count) || req.count < 1 || req.count > 500)
+    return { status: 400, message: "count must be a whole number from 1 to 500" };
+  if (!MODELS[req.model]) return { status: 400, message: "Unknown model" };
+  return undefined;
+}
+
 export function startJob(req: GenerateRequest, salt: string) {
-  if (job.status === "running") throw new ApiError(409, "A job is already running");
-  if (!process.env.GEMINI_API_KEY) throw new ApiError(400, "GEMINI_API_KEY is not set. Add it to .env and restart the server.");
-  if (!Number.isInteger(req.count) || req.count < 1 || req.count > 500) throw new ApiError(400, "count must be a whole number from 1 to 500");
   const model = MODELS[req.model];
-  if (!model) throw new ApiError(400, "Unknown model");
   const size = req.model === "lite" ? "1K" : req.size;
 
   job = { ...fresh(), status: "running", model, startedAt: new Date().toISOString() };
@@ -25,7 +34,7 @@ export function startJob(req: GenerateRequest, salt: string) {
       imageSize: size,
       concurrency: Math.min(Math.max(1, req.concurrency), 8),
       useNegative: req.useNegative,
-      outDir: OUT,
+      outDir: outDir(),
       salt,
     },
     undefined,

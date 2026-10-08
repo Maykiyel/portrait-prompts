@@ -294,6 +294,115 @@ try {
   rmSync(promptDir, { recursive: true, force: true });
 }
 
+// Ticket #7: the routes read through the module. Frames arrive as streams, every
+// failure arrives as a named code, and one table turns each code into a status.
+const routeDir = mkdtempSync(join(tempBase, "portrait-routes-"));
+const savedOut = process.env.OUT_DIR;
+const savedKey = process.env.GEMINI_API_KEY;
+try {
+  process.env.OUT_DIR = routeDir;
+  process.env.GEMINI_API_KEY = "";
+  const { createApp, STATUS_BY_CODE } = await import("./server/index");
+  const { refusalFor } = await import("./server/jobs");
+  const store = await import("./server/store");
+  const codes = Object.keys(STATUS_BY_CODE) as import("./errors").ArchiveErrorCode[];
+  const seeded = openOutputFolder(routeDir, "route-salt");
+  seeded.issueSeeds(3); // Seeds 1 to 3 are waiting
+  await seeded.importFrames([{ name: "one.png", buffer: await good() }], [1]);
+  const api = createApp("route-salt");
+  // A route that raises each code with a message nobody would ever write, so the
+  // status can only have come from the code.
+  for (const code of codes)
+    api.get(`/reworded/${code}`, () => {
+      throw new ArchiveError(code, `a message nobody wrote: ${code}`);
+    });
+  const post = (path: string, body: FormData) => api.request(path, { method: "POST", body });
+  const images = async (files: { name: string; buffer: Buffer }[], seeds: number[]) => {
+    const form = new FormData();
+    for (const file of files) form.append("files", new File([new Uint8Array(file.buffer)], file.name));
+    form.append("seeds", JSON.stringify(seeds));
+    return post("/api/import", form);
+  };
+  const request: import("./shared/api-types").GenerateRequest = { count: 1, model: "flash", size: "1K", concurrency: 1, useNegative: false };
+
+  results.push(check("one table maps every ArchiveErrorCode to a status, and nothing keys on text",
+    codes.length === 6 && codes.every((code) => typeof STATUS_BY_CODE[code] === "number")));
+  for (const code of codes) {
+    const reworded = await api.request(`/reworded/${code}`);
+    const body = (await reworded.json()) as { error?: string };
+    results.push(check(
+      `a reworded ${code} message still answers ${STATUS_BY_CODE[code]}`,
+      reworded.status === STATUS_BY_CODE[code] && body.error === `a message nobody wrote: ${code}`,
+    ));
+  }
+  results.push(check("the data module exports no error class carrying a status", !("ApiError" in store)));
+
+  const status = await api.request("/api/status");
+  const told = (await status.json()) as { next: number | null; waiting: number | null; done: number; saltSet: boolean; hasApiKey: boolean; problem?: string };
+  results.push(check("the status route reports the folder and still says whether an API key is set",
+    status.status === 200 && told.next === 4 && told.waiting === 2 && told.done === 1 &&
+    told.saltSet && told.hasApiKey === false && told.problem === undefined));
+
+  const listed = (await (await api.request("/api/images")).json()) as { seed: number; source: string; version: string; prompt: string }[];
+  results.push(check("the Frame list comes back through the route with its provenance",
+    listed.length === 1 && listed[0].seed === 1 && listed[0].source === "manual" &&
+    listed[0].version === seeded.status().version &&
+    listed[0].prompt.length > 0 && seeded.promptFor(1).includes(listed[0].prompt)));
+
+  const frame = await api.request("/api/images/1/file");
+  const raw = await api.request("/api/images/1/file?raw=1");
+  const frameMeta = await sharp(Buffer.from(await frame.arrayBuffer())).metadata();
+  const rawMeta = await sharp(Buffer.from(await raw.arrayBuffer())).metadata();
+  results.push(check("a Frame and a Raw image are served as streams, never as paths",
+    frame.status === 200 && raw.status === 200 && frame.headers.get("Content-Type") === "image/png" &&
+    frameMeta.width === 768 && frameMeta.height === 1152 && rawMeta.width === 848 && rawMeta.height === 1264));
+  const thumb = await api.request("/api/images/1/thumb?w=160");
+  results.push(check("a Thumbnail is served as a stream",
+    thumb.status === 200 && thumb.headers.get("Content-Type") === "image/webp" &&
+    (await sharp(Buffer.from(await thumb.arrayBuffer())).metadata()).width === 160));
+
+  results.push(check("a Seed with no Frame is refused with the missing-Frame status",
+    (await api.request("/api/images/3/file")).status === STATUS_BY_CODE["missing-frame"]));
+  results.push(check("an impossible Seed is refused with the invalid-Seed status",
+    (await api.request("/api/images/0/file")).status === STATUS_BY_CODE["invalid-seed"]));
+  results.push(check("a mismatched salt is refused with the salt-mismatch status",
+    (await createApp("wrong-salt").request("/api/prompts/pending")).status === STATUS_BY_CODE["salt-mismatch"]));
+
+  const partial = await images(
+    [{ name: "corrupt.png", buffer: Buffer.from("not an image") }, { name: "three.png", buffer: await good() }], [2, 3],
+  );
+  const perFile = (await partial.json()) as { results: { seed: number; ok: boolean }[] };
+  results.push(check("one corrupt download still answers per file, and the other Frame lands",
+    partial.status === 200 && perFile.results.length === 2 && !perFile.results[0].ok && perFile.results[1].ok &&
+    seeded.hasFrame(3) && !seeded.hasFrame(2)));
+  results.push(check("an import onto a Seed that already has a Frame is refused with the not-waiting status",
+    (await images([{ name: "again.png", buffer: await good() }], [1])).status === STATUS_BY_CODE["seed-not-waiting"]));
+  results.push(check("an import with no Frames at all is refused with the invalid-count status",
+    (await images([], [])).status === STATUS_BY_CODE["invalid-count"]));
+  results.push(check("seeds that are not a JSON array are refused with 400",
+    (await post("/api/import", (() => { const f = new FormData(); f.append("seeds", "not json"); return f; })())).status === 400));
+
+  results.push(check("a Rejection through the route returns the Seed to waiting",
+    (await api.request("/api/images/3/reject", { method: "POST" })).status === 200 &&
+    !seeded.hasFrame(3) && seeded.waitingSeeds().join() === "2,3" &&
+    (await api.request("/api/images/3/file")).status === STATUS_BY_CODE["missing-frame"]));
+  results.push(check("a second Rejection is refused with the missing-Frame status",
+    (await api.request("/api/images/3/reject", { method: "POST" })).status === STATUS_BY_CODE["missing-frame"]));
+
+  const noKey = await api.request("/api/generate", { method: "POST", body: JSON.stringify(request) });
+  results.push(check("the Job refuses to start without an API key",
+    noKey.status === 400 && ((await noKey.json()) as { error: string }).error.includes("GEMINI_API_KEY")));
+  const busy = refusalFor({ status: "running", total: 0, done: 0, failed: 0, log: [] }, true, request);
+  results.push(check("the Job refuses to start while one is running",
+    busy?.status === 409 && busy.message === "A job is already running"));
+} finally {
+  if (savedOut === undefined) delete process.env.OUT_DIR;
+  else process.env.OUT_DIR = savedOut;
+  if (savedKey === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = savedKey;
+  rmSync(routeDir, { recursive: true, force: true });
+}
+
 for (const d of [out, out2, inDir, "out-smoke3"]) rmSync(d, { recursive: true, force: true });
 const pass = results.every(Boolean);
 console.log(pass ? "\nsmoke test passed" : "\nsmoke test FAILED");
