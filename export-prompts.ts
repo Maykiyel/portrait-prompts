@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
-import { composePrompt } from "./sampler";
-import { claimSeeds, loadTemplate, pad } from "./common";
+import { pad } from "./common";
+import { openOutputFolder } from "./output-folder";
 
 function arg(name: string, fallback: string) {
   const i = process.argv.indexOf(name);
@@ -14,13 +14,14 @@ const useNegative = !process.argv.includes("--no-negative");
 const outFile = arg("--out", "prompts.html");
 const salt = (process.env.SEED_SALT ?? "").trim();
 
-const { version, template, negative } = loadTemplate();
+const folder = openOutputFolder(arg("--dir", "out"), salt);
+const { version } = folder.status();
 
 // Without --start, continue from the seed counter. Seeds with no image yet come first.
 const seeds =
   startArg !== ""
     ? Array.from({ length: count }, (_, i) => Number(startArg) + i)
-    : claimSeeds(arg("--dir", "out"), salt, count);
+    : folder.claimSeeds(count);
 const first = seeds[0];
 const last = seeds[seeds.length - 1];
 
@@ -28,7 +29,7 @@ const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 const cards = seeds.map((seed) => {
-  const p = composePrompt(template, negative, seed, salt, useNegative);
+  const p = folder.promptFor(seed, useNegative);
   return `<article data-seed="${seed}">
   <header><label><input type="checkbox"> <b>${pad(seed)}</b></label><button type="button">Copy</button></header>
   <pre>${esc(p)}</pre>

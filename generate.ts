@@ -1,9 +1,6 @@
 import "dotenv/config";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { assertSalt, claimSeeds, loadTemplate, logManifest, pad, saveImage } from "./common";
-import { composePrompt } from "./sampler";
 import { geminiGenerator, MODELS, type Generator } from "./gemini";
+import { openOutputFolder, type OutputFolder } from "./output-folder";
 
 export type RunOptions = {
   /** Leave undefined to continue from the seed counter. */
@@ -14,6 +11,7 @@ export type RunOptions = {
   aspectRatio: string;
   imageSize: string;
   outDir: string;
+  /** The module crops every Frame, so these no longer change the result. */
   width: number;
   height: number;
   useNegative: boolean;
@@ -40,17 +38,35 @@ export type RunHooks = {
   onResult?: (r: { seed: number; ok: boolean; message?: string }) => void;
 };
 
+/**
+ * The Seeds named with --start. The module only hands a Frame to a waiting Seed,
+ * so a run over Seeds the counter never issued asks it for the gap first. A dry
+ * run writes nothing and moves nothing, exactly as it did before.
+ */
+function namedSeeds(folder: OutputFolder, start: number, count: number, commit: boolean): number[] {
+  folder.waitingSeeds(); // the Seed salt guard, before any work
+  const last = start + count;
+  let next = folder.status().next ?? 1;
+  if (commit) {
+    while (next < last) {
+      const take = Math.min(500, last - next);
+      folder.issueSeeds(take);
+      next += take;
+    }
+  }
+  return Array.from({ length: count }, (_, i) => start + i);
+}
+
 export async function run(opts: RunOptions, generate: Generator = geminiGenerator, hooks: RunHooks = {}) {
-  assertSalt(opts.outDir, opts.salt);
-  const { version, template, negative } = loadTemplate();
+  const folder = openOutputFolder(opts.outDir, opts.salt);
 
   const seeds =
     opts.start !== undefined
-      ? Array.from({ length: opts.count }, (_, i) => opts.start! + i)
-      : claimSeeds(opts.outDir, opts.salt, opts.count, !opts.dryRun);
-  const todo = seeds.filter((s) => !existsSync(join(opts.outDir, `${pad(s)}.png`)));
+      ? namedSeeds(folder, opts.start, opts.count, !opts.dryRun)
+      : folder.claimSeeds(opts.count, !opts.dryRun);
+  const todo = seeds.filter((seed) => !folder.hasFrame(seed));
   console.log(
-    `${version} | ${opts.model} | ${todo.length} to generate, ${seeds.length - todo.length} already done` +
+    `${folder.status().version} | ${opts.model} | ${todo.length} to generate, ${seeds.length - todo.length} already done` +
       (todo.length ? ` | seeds ${todo[0]} to ${todo[todo.length - 1]}` : ""),
   );
 
@@ -62,24 +78,22 @@ export async function run(opts: RunOptions, generate: Generator = geminiGenerato
   async function worker() {
     while (next < todo.length) {
       const seed = todo[next++];
-      const prompt = composePrompt(template, negative, seed, opts.salt, opts.useNegative);
+      const prompt = folder.promptFor(seed, opts.useNegative);
 
-      const log = { seed, version, salt: opts.salt, model: opts.model, prompt };
       try {
         if (opts.dryRun) {
           console.log(`\n[${seed}] ${prompt}`);
           continue;
         }
-        const buf = await generate(prompt, opts);
-        await saveImage(buf, seed, opts);
-        logManifest(opts.outDir, { ...log, status: "ok" });
+        const buffer = await generate(prompt, opts);
+        await folder.writeFrame({ seed, buffer, model: opts.model, prompt });
         done++;
         hooks.onResult?.({ seed, ok: true });
         console.log(`[${seed}] ok (${done}/${todo.length})`);
       } catch (err) {
         failed++;
         const error = err instanceof Error ? err.message : String(err);
-        logManifest(opts.outDir, { ...log, status: "failed", error });
+        folder.recordAttempt({ seed, model: opts.model, prompt, status: "failed", error });
         hooks.onResult?.({ seed, ok: false, message: error });
         console.error(`[${seed}] failed: ${error}`);
       }
