@@ -8,7 +8,7 @@ import { QueryError } from "@/shared/components/query-error";
 import { useImages, thumbUrl } from "@/shared/lib/frames-api";
 import { useAddPrompts } from "@/shared/lib/prompts-api";
 import { useStatus } from "@/shared/lib/status-api";
-import { useSettings } from "@/stores/settings";
+import { useSettings } from "@/app/settings-store";
 
 export function Overview() {
   const status = useStatus();

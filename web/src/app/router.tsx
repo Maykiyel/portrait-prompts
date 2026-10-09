@@ -1,5 +1,5 @@
 import { createBrowserRouter, Navigate } from "react-router";
-import { AppShell } from "@/shared/components/layout/app-shell";
+import { AppShell } from "./app-shell";
 import { Prompts } from "@/features/prompts/prompts-page";
 import { Gallery } from "@/features/gallery/gallery-page";
 import { Generate } from "@/features/generate/generate-page";
