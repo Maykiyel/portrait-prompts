@@ -1,6 +1,6 @@
 import axios from "axios";
 import type {
-  GenerateRequest, ImageItem, JobState, PromptsResponse, Status,
+  ImageItem, JobState, PromptsResponse, Status,
 } from "@shared/api-types";
 
 // Exported so a page-only request can reach the same error interceptor.
@@ -23,7 +23,6 @@ export const api = {
   pending: (useNegative: boolean) => http.get<PromptsResponse>("/prompts/pending", { params: { useNegative: useNegative ? "1" : "0" } }).then((r) => r.data),
   addPrompts: (count: number, useNegative: boolean) => http.post<PromptsResponse>("/prompts/new", { count, useNegative }).then((r) => r.data),
   images: () => http.get<ImageItem[]>("/images").then((r) => r.data),
-  startJob: (req: GenerateRequest) => http.post<JobState>("/generate", req).then((r) => r.data),
   job: () => http.get<JobState>("/generate/job").then((r) => r.data),
 };
 

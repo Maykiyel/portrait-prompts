@@ -2,7 +2,7 @@ import { createBrowserRouter, Navigate } from "react-router";
 import { AppShell } from "@/components/layout/app-shell";
 import { Prompts } from "@/features/prompts/prompts-page";
 import { Gallery } from "@/features/gallery/gallery-page";
-import { Generate } from "@/pages/generate";
+import { Generate } from "@/features/generate/generate-page";
 import { ImportPage } from "@/features/import/import-page";
 import { Overview } from "@/features/overview/overview-page";
 

@@ -11,14 +11,10 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/page-header";
-import { keys, useJob, useStartJob, useStatus } from "@/lib/queries";
+import { keys, useJob, useStatus } from "@/lib/queries";
 import { seedLabel } from "@/lib/text";
-
-const models = [
-  { value: "flash", label: "Flash (default)" },
-  { value: "lite", label: "Flash Lite (cheapest, 1K only)" },
-  { value: "pro", label: "Pro (best quality)" },
-] as const;
+import { models } from "./models";
+import { useStartJob } from "./start-job";
 
 export function Generate() {
   const status = useStatus();

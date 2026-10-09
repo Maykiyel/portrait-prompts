@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { GenerateRequest } from "@shared/api-types";
 import { api } from "./api";
 
 export const keys = {
@@ -35,13 +34,5 @@ export function useAddPrompts() {
       void qc.invalidateQueries({ queryKey: ["pending"] });
       void qc.invalidateQueries({ queryKey: keys.status });
     },
-  });
-}
-
-export function useStartJob() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (req: GenerateRequest) => api.startJob(req),
-    onSuccess: (job) => qc.setQueryData(keys.job, job),
   });
 }
