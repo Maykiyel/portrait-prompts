@@ -3,7 +3,7 @@ import type {
   GenerateRequest, ImageItem, ImportResponse, JobState, PromptsResponse, Status,
 } from "@shared/api-types";
 
-const http = axios.create({ baseURL: "/api" });
+export const http = axios.create({ baseURL: "/api" });
 
 // Turn the server's { error } body into a normal Error message.
 http.interceptors.response.use(
@@ -22,7 +22,6 @@ export const api = {
   pending: (useNegative: boolean) => http.get<PromptsResponse>("/prompts/pending", { params: { useNegative: useNegative ? "1" : "0" } }).then((r) => r.data),
   addPrompts: (count: number, useNegative: boolean) => http.post<PromptsResponse>("/prompts/new", { count, useNegative }).then((r) => r.data),
   images: () => http.get<ImageItem[]>("/images").then((r) => r.data),
-  reject: (seed: number) => http.post(`/images/${seed}/reject`).then((r) => r.data),
   importImages: (files: File[], seeds: number[]) => {
     const form = new FormData();
     for (const f of files) form.append("files", f);

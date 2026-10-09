@@ -1,6 +1,6 @@
 import { createBrowserRouter, Navigate } from "react-router";
 import { AppShell } from "@/components/layout/app-shell";
-import { Gallery } from "@/pages/gallery";
+import { Gallery } from "@/features/gallery/gallery-page";
 import { Generate } from "@/pages/generate";
 import { ImportPage } from "@/pages/import";
 import { Overview } from "@/pages/overview";

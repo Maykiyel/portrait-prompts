@@ -21,7 +21,7 @@ export const useJob = () =>
     refetchInterval: (q) => (q.state.data?.status === "running" ? 1000 : false),
   });
 
-function useRefreshAll() {
+export function useRefreshAll() {
   const qc = useQueryClient();
   return () => Promise.all([keys.status, ["pending"], keys.images].map((queryKey) => qc.invalidateQueries({ queryKey })));
 }
@@ -44,11 +44,6 @@ export function useImportImages() {
     mutationFn: ({ files, seeds }: { files: File[]; seeds: number[] }) => api.importImages(files, seeds),
     onSuccess: refresh,
   });
-}
-
-export function useRejectImage() {
-  const refresh = useRefreshAll();
-  return useMutation({ mutationFn: (seed: number) => api.reject(seed), onSuccess: refresh });
 }
 
 export function useStartJob() {
