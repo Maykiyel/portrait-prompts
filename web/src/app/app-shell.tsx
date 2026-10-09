@@ -4,7 +4,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/shared/components/ui/aler
 import { Button } from "@/shared/components/ui/button";
 import { useStatus } from "@/shared/lib/status-api";
 import { cn } from "@/shared/lib/utils";
-import { useSettings, type Theme } from "@/stores/settings";
+import { useSettings, type Theme } from "./settings-store";
 
 const nav = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
