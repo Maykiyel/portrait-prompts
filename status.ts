@@ -5,11 +5,13 @@ const outDir = process.argv.slice(2).filter((a) => a !== "--")[0] ?? "out";
 const folder = openOutputFolder(outDir, (process.env.SEED_SALT ?? "").trim());
 // One read of the folder answers every question below, including the failed
 // count. A folder the module calls unusable stops the command rather than
-// reporting numbers it cannot stand behind.
+// reporting numbers it cannot stand behind. A salt mismatch is different:
+// it is a report about the environment, so the command says what is wrong
+// and leaves the exit code alone.
 const state = folder.status();
 if (state.problem) {
   console.error(state.problem);
-  process.exit(1);
+  process.exit(state.problemCode === "unreadable-counter" ? 1 : 0);
 }
 const waiting = folder.waitingSeeds();
 

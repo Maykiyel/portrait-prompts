@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { geminiGenerator, MODELS, type Generator } from "./gemini";
-import { openOutputFolder, type OutputFolder } from "./output-folder";
+import { namedSeeds, openOutputFolder } from "./output-folder";
 
 export type RunOptions = {
   /** Leave undefined to continue from the seed counter. */
@@ -11,9 +11,6 @@ export type RunOptions = {
   aspectRatio: string;
   imageSize: string;
   outDir: string;
-  /** The module crops every Frame, so these no longer change the result. */
-  width: number;
-  height: number;
   useNegative: boolean;
   dryRun: boolean;
   /** Handed in by whoever started the run, never read from the environment here. */
@@ -27,8 +24,6 @@ export const defaults: Omit<RunOptions, "salt"> = {
   aspectRatio: "2:3",
   imageSize: "1K",
   outDir: "out",
-  width: 768,
-  height: 1152,
   useNegative: true,
   dryRun: false,
 };
@@ -37,25 +32,6 @@ export type RunHooks = {
   onStart?: (total: number) => void;
   onResult?: (r: { seed: number; ok: boolean; message?: string }) => void;
 };
-
-/**
- * The Seeds named with --start. The module only hands a Frame to a waiting Seed,
- * so a run over Seeds the counter never issued asks it for the gap first. A dry
- * run writes nothing and moves nothing, exactly as it did before.
- */
-function namedSeeds(folder: OutputFolder, start: number, count: number, commit: boolean): number[] {
-  folder.waitingSeeds(); // the Seed salt guard, before any work
-  const last = start + count;
-  let next = folder.status().next ?? 1;
-  if (commit) {
-    while (next < last) {
-      const take = Math.min(500, last - next);
-      folder.issueSeeds(take);
-      next += take;
-    }
-  }
-  return Array.from({ length: count }, (_, i) => start + i);
-}
 
 export async function run(opts: RunOptions, generate: Generator = geminiGenerator, hooks: RunHooks = {}) {
   const folder = openOutputFolder(opts.outDir, opts.salt);

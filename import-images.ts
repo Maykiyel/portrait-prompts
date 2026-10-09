@@ -2,38 +2,18 @@ import "dotenv/config";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
 import sharp from "sharp";
-import { openOutputFolder, seedLabel, type OutputFolder } from "./output-folder";
+import { namedSeeds, openOutputFolder, seedLabel } from "./output-folder";
 
 export type ImportOptions = {
   inDir: string;
   /** Leave undefined to fill the oldest seeds that still have no image. */
   start?: number;
   outDir: string;
-  width: number;
-  height: number;
   dryRun: boolean;
   salt: string;
 };
 
 const EXT = new Set([".png", ".jpg", ".jpeg", ".webp"]);
-
-/**
- * The Seeds named with --start. The module only hands a Frame to a waiting Seed,
- * so an import over Seeds the counter never issued asks it for the gap first. A
- * dry run writes nothing and moves nothing, exactly as it did before.
- */
-function namedSeeds(folder: OutputFolder, start: number, count: number, commit: boolean): number[] {
-  const last = start + count;
-  let next = folder.status().next ?? 1;
-  if (commit) {
-    while (next < last) {
-      const take = Math.min(500, last - next);
-      folder.issueSeeds(take);
-      next += take;
-    }
-  }
-  return Array.from({ length: count }, (_, i) => start + i);
-}
 
 export async function importImages(o: ImportOptions) {
   const folder = openOutputFolder(o.outDir, o.salt);
@@ -97,8 +77,6 @@ if (process.argv[1]?.endsWith("import-images.ts")) {
     inDir,
     start: arg("--start") !== undefined ? Number(arg("--start")) : undefined,
     outDir: arg("--out", "out")!,
-    width: 768,
-    height: 1152,
     dryRun: process.argv.includes("--dry-run"),
     salt: (process.env.SEED_SALT ?? "").trim(),
   });

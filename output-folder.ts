@@ -2,7 +2,7 @@ import { appendFileSync, createReadStream, existsSync, mkdirSync, readFileSync, 
 import { join } from "node:path";
 import type { ReadStream } from "node:fs";
 import sharp from "sharp";
-import { ArchiveError } from "./errors";
+import { ArchiveError, type ArchiveErrorCode } from "./errors";
 import { buildPrompt, composePrompt } from "./sampler";
 
 export type FolderStatus = {
@@ -13,6 +13,8 @@ export type FolderStatus = {
   failed: number;
   saltSet: boolean;
   problem?: string;
+  /** Which problem `problem` describes, so a caller can tell a report from a stop. */
+  problemCode?: ArchiveErrorCode;
 };
 
 export type FrameRecord = {
@@ -86,6 +88,26 @@ const pad = (seed: number) => String(seed).padStart(5, "0");
  * filenames; nothing else gets to build one.
  */
 export const seedLabel = (seed: number) => pad(seed);
+
+/**
+ * The Seeds named with --start. The module only hands a Frame to a
+ * waiting Seed, so a command over Seeds the counter never issued asks
+ * it for the gap first. A dry run writes nothing and moves nothing,
+ * exactly as it did before.
+ */
+export function namedSeeds(folder: OutputFolder, start: number, count: number, commit: boolean): number[] {
+  folder.waitingSeeds(); // the Seed salt guard, before any work
+  const last = start + count;
+  let next = folder.status().next ?? 1;
+  if (commit) {
+    while (next < last) {
+      const take = Math.min(500, last - next);
+      folder.issueSeeds(take);
+      next += take;
+    }
+  }
+  return Array.from({ length: count }, (_, i) => start + i);
+}
 
 const invalidSeed = () => new ArchiveError("invalid-seed", "Seed must be a positive whole number");
 const validateSeed = (seed: number) => {
@@ -204,7 +226,7 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
       return { ...base, next, waiting };
     } catch (err) {
       if (!(err instanceof ArchiveError)) throw err;
-      return { ...base, next: null, waiting: null, problem: err.message };
+      return { ...base, next: null, waiting: null, problem: err.message, problemCode: err.code };
     }
   };
 
