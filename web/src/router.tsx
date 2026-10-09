@@ -3,7 +3,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { Prompts } from "@/features/prompts/prompts-page";
 import { Gallery } from "@/pages/gallery";
 import { Generate } from "@/pages/generate";
-import { ImportPage } from "@/pages/import";
+import { ImportPage } from "@/features/import/import-page";
 import { Overview } from "@/features/overview/overview-page";
 
 export const router = createBrowserRouter([

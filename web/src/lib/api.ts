@@ -1,9 +1,10 @@
 import axios from "axios";
 import type {
-  GenerateRequest, ImageItem, ImportResponse, JobState, PromptsResponse, Status,
+  GenerateRequest, ImageItem, JobState, PromptsResponse, Status,
 } from "@shared/api-types";
 
-const http = axios.create({ baseURL: "/api" });
+// Exported so a page-only request can reach the same error interceptor.
+export const http = axios.create({ baseURL: "/api" });
 
 // Turn the server's { error } body into a normal Error message.
 http.interceptors.response.use(
@@ -23,12 +24,6 @@ export const api = {
   addPrompts: (count: number, useNegative: boolean) => http.post<PromptsResponse>("/prompts/new", { count, useNegative }).then((r) => r.data),
   images: () => http.get<ImageItem[]>("/images").then((r) => r.data),
   reject: (seed: number) => http.post(`/images/${seed}/reject`).then((r) => r.data),
-  importImages: (files: File[], seeds: number[]) => {
-    const form = new FormData();
-    for (const f of files) form.append("files", f);
-    form.append("seeds", JSON.stringify(seeds));
-    return http.post<ImportResponse>("/import", form).then((r) => r.data);
-  },
   startJob: (req: GenerateRequest) => http.post<JobState>("/generate", req).then((r) => r.data),
   job: () => http.get<JobState>("/generate/job").then((r) => r.data),
 };

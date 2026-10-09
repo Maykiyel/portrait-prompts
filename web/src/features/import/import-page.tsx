@@ -8,10 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PageHeader } from "@/components/page-header";
 import { QueryError } from "@/components/query-error";
-import { useAddPrompts, useImportImages, usePending } from "@/lib/queries";
+import { useAddPrompts, usePending } from "@/lib/queries";
 import { seedLabel, summarize } from "@/lib/text";
 import { cn } from "@/lib/utils";
-import { useImportQueue } from "@/stores/import-queue";
+import { useImportImages } from "@/features/import/import-api";
+import { useImportQueue } from "@/features/import/import-queue";
 
 export function ImportPage() {
   const pending = usePending(false);
