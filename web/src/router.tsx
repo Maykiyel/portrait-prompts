@@ -1,10 +1,10 @@
 import { createBrowserRouter, Navigate } from "react-router";
 import { AppShell } from "@/components/layout/app-shell";
+import { Prompts } from "@/features/prompts/prompts-page";
 import { Gallery } from "@/pages/gallery";
 import { Generate } from "@/pages/generate";
 import { ImportPage } from "@/pages/import";
 import { Overview } from "@/pages/overview";
-import { Prompts } from "@/pages/prompts";
 
 export const router = createBrowserRouter([
   {
