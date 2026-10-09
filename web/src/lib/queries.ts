@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { GenerateRequest } from "@shared/api-types";
 import { api } from "./api";
 
 export const keys = {
@@ -51,10 +50,4 @@ export function useRejectImage() {
   return useMutation({ mutationFn: (seed: number) => api.reject(seed), onSuccess: refresh });
 }
 
-export function useStartJob() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (req: GenerateRequest) => api.startJob(req),
-    onSuccess: (job) => qc.setQueryData(keys.job, job),
-  });
-}
+

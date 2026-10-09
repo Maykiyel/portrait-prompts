@@ -1,9 +1,9 @@
 import axios from "axios";
 import type {
-  GenerateRequest, ImageItem, ImportResponse, JobState, PromptsResponse, Status,
+  ImageItem, ImportResponse, JobState, PromptsResponse, Status,
 } from "@shared/api-types";
 
-const http = axios.create({ baseURL: "/api" });
+export const http = axios.create({ baseURL: "/api" });
 
 // Turn the server's { error } body into a normal Error message.
 http.interceptors.response.use(
@@ -29,7 +29,6 @@ export const api = {
     form.append("seeds", JSON.stringify(seeds));
     return http.post<ImportResponse>("/import", form).then((r) => r.data);
   },
-  startJob: (req: GenerateRequest) => http.post<JobState>("/generate", req).then((r) => r.data),
   job: () => http.get<JobState>("/generate/job").then((r) => r.data),
 };
 
