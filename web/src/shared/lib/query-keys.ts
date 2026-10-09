@@ -14,7 +14,7 @@ export const keys = {
 export function useRefreshAll() {
   const qc = useQueryClient();
   return useCallback(
-    () => Promise.all([keys.status, ["pending"], keys.images].map((queryKey) => qc.invalidateQueries({ queryKey }))),
+    () => Promise.all([keys.status, keys.pending, keys.images].map((queryKey) => qc.invalidateQueries({ queryKey }))),
     [qc],
   );
 }

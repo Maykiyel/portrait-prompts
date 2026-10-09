@@ -9,9 +9,9 @@ import { Skeleton } from "@/shared/components/ui/skeleton";
 import { Switch } from "@/shared/components/ui/switch";
 import { PageHeader } from "@/shared/components/page-header";
 import { QueryError } from "@/shared/components/query-error";
-import { PromptRow } from "@/features/prompts/prompt-row";
 import { useAddPrompts, usePending } from "@/shared/lib/prompts-api";
 import { useSettings } from "@/app/settings-store";
+import { PromptRow } from "./prompt-row";
 
 export function Prompts() {
   const includeNegative = useSettings((s) => s.includeNegative);

@@ -11,8 +11,8 @@ import { QueryError } from "@/shared/components/query-error";
 import { useAddPrompts, usePending } from "@/shared/lib/prompts-api";
 import { seedLabel, summarize } from "@/lib/text";
 import { cn } from "@/shared/lib/utils";
-import { useImportImages } from "@/features/import/import-api";
-import { useImportQueue } from "@/features/import/import-queue";
+import { useImportImages } from "./import-api";
+import { useImportQueue } from "./import-queue";
 
 export function ImportPage() {
   const pending = usePending(false);
