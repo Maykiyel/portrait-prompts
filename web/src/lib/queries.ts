@@ -38,11 +38,6 @@ export function useAddPrompts() {
   });
 }
 
-export function useRejectImage() {
-  const refresh = useRefreshAll();
-  return useMutation({ mutationFn: (seed: number) => api.reject(seed), onSuccess: refresh });
-}
-
 export function useStartJob() {
   const qc = useQueryClient();
   return useMutation({
