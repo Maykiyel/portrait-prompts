@@ -1,10 +1,15 @@
+import { lazy } from "react";
 import { createBrowserRouter, Navigate } from "react-router";
 import { AppShell } from "./app-shell";
-import { Prompts } from "@/features/prompts/prompts-page";
-import { Gallery } from "@/features/gallery/gallery-page";
-import { Generate } from "@/features/generate/generate-page";
-import { ImportPage } from "@/features/import/import-page";
-import { Overview } from "@/features/overview/overview-page";
+
+// Each page is one dynamic import, so a route's code is fetched when the user
+// first goes there instead of on every page load. The boundary in the shell
+// catches a chunk that never arrives.
+const Overview = lazy(() => import("@/features/overview/overview-page").then((m) => ({ default: m.Overview })));
+const Prompts = lazy(() => import("@/features/prompts/prompts-page").then((m) => ({ default: m.Prompts })));
+const ImportPage = lazy(() => import("@/features/import/import-page").then((m) => ({ default: m.ImportPage })));
+const Generate = lazy(() => import("@/features/generate/generate-page").then((m) => ({ default: m.Generate })));
+const Gallery = lazy(() => import("@/features/gallery/gallery-page").then((m) => ({ default: m.Gallery })));
 
 export const router = createBrowserRouter([
   {

@@ -4,6 +4,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/shared/components/ui/aler
 import { Button } from "@/shared/components/ui/button";
 import { useStatus } from "@/shared/lib/status-api";
 import { cn } from "@/shared/lib/utils";
+import { RouteBoundary } from "./route-boundary";
 import { useSettings, type Theme } from "./settings-store";
 
 const nav = [
@@ -72,7 +73,9 @@ export function AppShell() {
             </AlertDescription>
           </Alert>
         )}
-        <Outlet />
+        <RouteBoundary>
+          <Outlet />
+        </RouteBoundary>
       </main>
     </div>
   );
