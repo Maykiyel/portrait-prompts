@@ -1,9 +1,9 @@
 import { NavLink, Outlet } from "react-router";
 import { AlertCircle, ClipboardList, GalleryHorizontal, LayoutDashboard, Monitor, Moon, Sparkles, Sun, Upload } from "lucide-react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { useStatus } from "@/lib/queries";
-import { cn } from "@/lib/utils";
+import { Alert, AlertDescription, AlertTitle } from "@/shared/components/ui/alert";
+import { Button } from "@/shared/components/ui/button";
+import { useStatus } from "@/shared/lib/status-api";
+import { cn } from "@/shared/lib/utils";
 import { useSettings, type Theme } from "@/stores/settings";
 
 const nav = [

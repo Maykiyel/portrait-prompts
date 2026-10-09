@@ -1,16 +1,16 @@
 import { useState } from "react";
 import { ExternalLink, Plus } from "lucide-react";
 import { toast } from "sonner";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
-import { PageHeader } from "@/components/page-header";
-import { QueryError } from "@/components/query-error";
+import { Badge } from "@/shared/components/ui/badge";
+import { Button } from "@/shared/components/ui/button";
+import { Input } from "@/shared/components/ui/input";
+import { Label } from "@/shared/components/ui/label";
+import { Skeleton } from "@/shared/components/ui/skeleton";
+import { Switch } from "@/shared/components/ui/switch";
+import { PageHeader } from "@/shared/components/page-header";
+import { QueryError } from "@/shared/components/query-error";
 import { PromptRow } from "@/features/prompts/prompt-row";
-import { useAddPrompts, usePending } from "@/lib/queries";
+import { useAddPrompts, usePending } from "@/shared/lib/prompts-api";
 import { useSettings } from "@/stores/settings";
 
 export function Prompts() {

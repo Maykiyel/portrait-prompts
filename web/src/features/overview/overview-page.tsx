@@ -1,12 +1,13 @@
 import { Link, useNavigate } from "react-router";
 import { AlertTriangle } from "lucide-react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
-import { PageHeader } from "@/components/page-header";
-import { QueryError } from "@/components/query-error";
-import { thumbUrl } from "@/lib/api";
-import { useAddPrompts, useImages, useStatus } from "@/lib/queries";
+import { Alert, AlertDescription, AlertTitle } from "@/shared/components/ui/alert";
+import { Button } from "@/shared/components/ui/button";
+import { Skeleton } from "@/shared/components/ui/skeleton";
+import { PageHeader } from "@/shared/components/page-header";
+import { QueryError } from "@/shared/components/query-error";
+import { useImages, thumbUrl } from "@/shared/lib/frames-api";
+import { useAddPrompts } from "@/shared/lib/prompts-api";
+import { useStatus } from "@/shared/lib/status-api";
 import { useSettings } from "@/stores/settings";
 
 export function Overview() {

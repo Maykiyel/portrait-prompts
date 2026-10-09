@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/shared/components/ui/button";
 import { copyText, seedLabel, summarize } from "@/lib/text";
-import { cn } from "@/lib/utils";
+import { cn } from "@/shared/lib/utils";
 import { useCopied } from "@/features/prompts/copied-store";
 
 export function PromptRow({ seed, prompt }: { seed: number; prompt: string }) {

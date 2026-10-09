@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
-import { http } from "@/lib/api";
-import { useRefreshAll } from "@/lib/queries";
+import { http } from "@/shared/lib/http";
+import { useRefreshAll } from "@/shared/lib/queries";
 
 const reject = (seed: number) => http.post(`/images/${seed}/reject`).then((r) => r.data);
 

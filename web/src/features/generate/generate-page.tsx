@@ -1,17 +1,18 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, KeyRound } from "lucide-react";
 import type { GenerateRequest } from "@shared/api-types";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import { PageHeader } from "@/components/page-header";
-import { keys, useJob, useStatus } from "@/lib/queries";
+import { Alert, AlertDescription, AlertTitle } from "@/shared/components/ui/alert";
+import { Button } from "@/shared/components/ui/button";
+import { Input } from "@/shared/components/ui/input";
+import { Label } from "@/shared/components/ui/label";
+import { Progress } from "@/shared/components/ui/progress";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/shared/components/ui/select";
+import { Switch } from "@/shared/components/ui/switch";
+import { PageHeader } from "@/shared/components/page-header";
+import { useJob } from "@/shared/lib/job-api";
+import { useRefreshAll } from "@/shared/lib/queries";
+import { useStatus } from "@/shared/lib/status-api";
 import { seedLabel } from "@/lib/text";
 import { models } from "./models";
 import { useStartJob } from "./start-job";
@@ -20,7 +21,7 @@ export function Generate() {
   const status = useStatus();
   const job = useJob();
   const start = useStartJob();
-  const qc = useQueryClient();
+  const refresh = useRefreshAll();
 
   const [count, setCount] = useState("10");
   const [model, setModel] = useState<GenerateRequest["model"]>("flash");
@@ -34,9 +35,8 @@ export function Generate() {
 
   // Refresh counts and the gallery once a job ends.
   useEffect(() => {
-    if (!finished) return;
-    for (const k of [keys.status, ["pending"], keys.images]) void qc.invalidateQueries({ queryKey: k });
-  }, [finished, qc]);
+    if (finished) void refresh();
+  }, [finished, refresh]);
 
   const n = Number(count);
   const c = Number(concurrency);
