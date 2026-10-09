@@ -9,7 +9,7 @@ import { ArchiveError, type ArchiveErrorCode } from "../errors";
 import { seedLabel } from "../output-folder";
 import { getJob, refusalFor, startJob } from "./jobs";
 import {
-  addPrompts, getPending, getStatus, importFiles, listImages, readFrame, readThumbnail, rejectFrame,
+  addPrompts, getPending, getStatus, importFiles, importRefusal, listImages, readFrame, readThumbnail, rejectFrame,
   type FrameStream,
 } from "./store";
 
@@ -53,7 +53,7 @@ export function createApp(salt: string): Hono {
     const seed = Number(c.req.param("seed"));
     c.header("Content-Type", "image/png");
     c.header("Cache-Control", "no-cache");
-    if (c.req.query("download") === "1") c.header("Content-Disposition", `attachment; filename="${seedLabel(Number(c.req.param("seed")))}.png"`);
+    if (c.req.query("download") === "1") c.header("Content-Disposition", `attachment; filename="${seedLabel(seed)}.png"`);
     return send(c, readFrame(salt, seed, c.req.query("raw") === "1"));
   });
   api.post("/images/:seed/reject", (c) => {
@@ -67,10 +67,16 @@ export function createApp(salt: string): Hono {
     const files = (Array.isArray(raw) ? raw : raw ? [raw] : []).filter((f): f is File => f instanceof File);
     let seeds: number[];
     try {
-      seeds = JSON.parse(String(body.seeds ?? "[]")) as number[];
+      // The batch is checked as an array here, before anything reads it: a Seed
+      // list that parsed into something else is a bad request, not a crash.
+      const parsed: unknown = JSON.parse(String(body.seeds ?? "[]"));
+      if (!Array.isArray(parsed)) return c.json({ error: "seeds must be a JSON array" }, 400);
+      seeds = parsed as number[];
     } catch {
       return c.json({ error: "seeds must be a JSON array" }, 400);
     }
+    const refused = importRefusal(seeds);
+    if (refused) return c.json({ error: refused.message }, refused.status);
     return c.json({ results: await importFiles(salt, files, seeds) });
   });
 

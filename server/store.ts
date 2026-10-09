@@ -60,3 +60,17 @@ export const importFiles = async (salt: string, files: File[], seeds: number[]):
     await Promise.all(files.map(async (file) => ({ name: file.name, buffer: Buffer.from(await file.arrayBuffer()) }))),
     seeds,
   );
+
+/** Why an import is refused before it reaches the module. The route turns this into a response, so no refusal here carries a status from the module. */
+export type ImportRefusal = { status: 400; message: string };
+
+/**
+ * The one batch-validity refusal: a Seed named twice in one batch is a
+ * bad request, not a Seed that is not waiting. The module still raises
+ * for callers that go straight to it.
+ */
+export function importRefusal(seeds: number[]): ImportRefusal | undefined {
+  return new Set(seeds).size !== seeds.length
+    ? { status: 400, message: "Two images share a seed" }
+    : undefined;
+}
