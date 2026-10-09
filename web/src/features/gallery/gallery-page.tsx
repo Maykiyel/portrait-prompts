@@ -1,11 +1,10 @@
 import { useState } from "react";
-import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { Skeleton } from "@/components/ui/skeleton";
-import { PageHeader } from "@/components/page-header";
-import { QueryError } from "@/components/query-error";
-import { thumbUrl } from "@/lib/api";
-import { useImages } from "@/lib/queries";
+import { Badge } from "@/shared/components/ui/badge";
+import { Dialog, DialogContent } from "@/shared/components/ui/dialog";
+import { Skeleton } from "@/shared/components/ui/skeleton";
+import { PageHeader } from "@/shared/components/page-header";
+import { QueryError } from "@/shared/components/query-error";
+import { useImages, thumbUrl } from "@/shared/lib/frames-api";
 import { seedLabel } from "@/lib/text";
 import { FrameDetail } from "./frame-detail";
 

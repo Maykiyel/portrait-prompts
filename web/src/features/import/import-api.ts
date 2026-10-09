@@ -1,7 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
 import type { ImportResponse } from "@shared/api-types";
-import { http } from "@/lib/api";
-import { useRefreshAll } from "@/lib/queries";
+import { http } from "@/shared/lib/http";
+import { useRefreshAll } from "@/shared/lib/queries";
 
 export const importImages = (files: File[], seeds: number[]) => {
   const form = new FormData();

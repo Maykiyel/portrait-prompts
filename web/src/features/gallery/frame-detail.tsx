@@ -2,9 +2,9 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight, Copy, Download, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { ImageItem } from "@shared/api-types";
-import { Button } from "@/components/ui/button";
-import { DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { fileUrl } from "@/lib/api";
+import { Button } from "@/shared/components/ui/button";
+import { DialogDescription, DialogTitle } from "@/shared/components/ui/dialog";
+import { fileUrl } from "@/shared/lib/frames-api";
 import { copyText, seedLabel } from "@/lib/text";
 import { useRejectImage } from "./reject-image";
 

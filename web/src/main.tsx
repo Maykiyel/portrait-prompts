@@ -3,8 +3,8 @@ import { createRoot } from "react-dom/client";
 import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "react-router/dom";
 import { toast } from "sonner";
-import { ThemeSync } from "@/components/theme-sync";
-import { Toaster } from "@/components/ui/sonner";
+import { ThemeSync } from "@/shared/components/theme-sync";
+import { Toaster } from "@/shared/components/ui/sonner";
 import { router } from "./router";
 import "./index.css";
 
