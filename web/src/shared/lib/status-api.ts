@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { Status } from "@shared/api-types";
 import { http } from "./http";
-import { keys } from "./queries";
+import { keys } from "./query-keys";
 
 const status = () => http.get<Status>("/status").then((r) => r.data);
 

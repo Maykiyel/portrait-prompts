@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { GenerateRequest, JobState } from "@shared/api-types";
 import { http } from "@/shared/lib/http";
-import { keys } from "@/shared/lib/queries";
+import { keys } from "@/shared/lib/query-keys";
 
 const startJob = (req: GenerateRequest) => http.post<JobState>("/generate", req).then((r) => r.data);
 

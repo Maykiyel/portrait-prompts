@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/shared/components/ui/switch";
 import { PageHeader } from "@/shared/components/page-header";
 import { useJob } from "@/shared/lib/job-api";
-import { useRefreshAll } from "@/shared/lib/queries";
+import { useRefreshAll } from "@/shared/lib/query-keys";
 import { useStatus } from "@/shared/lib/status-api";
 import { seedLabel } from "@/lib/text";
 import { models } from "./models";

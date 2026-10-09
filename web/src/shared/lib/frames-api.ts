@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ImageItem } from "@shared/api-types";
 import { http } from "./http";
-import { keys } from "./queries";
+import { keys } from "./query-keys";
 
 const images = () => http.get<ImageItem[]>("/images").then((r) => r.data);
 

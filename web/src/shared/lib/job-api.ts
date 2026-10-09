@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { JobState } from "@shared/api-types";
 import { http } from "./http";
-import { keys } from "./queries";
+import { keys } from "./query-keys";
 
 const job = () => http.get<JobState>("/generate/job").then((r) => r.data);
 

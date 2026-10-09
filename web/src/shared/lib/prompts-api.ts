@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PromptsResponse } from "@shared/api-types";
 import { http } from "./http";
-import { keys } from "./queries";
+import { keys } from "./query-keys";
 
 const pending = (useNegative: boolean) => http.get<PromptsResponse>("/prompts/pending", { params: { useNegative: useNegative ? "1" : "0" } }).then((r) => r.data);
 const addPrompts = (count: number, useNegative: boolean) => http.post<PromptsResponse>("/prompts/new", { count, useNegative }).then((r) => r.data);
@@ -17,7 +17,7 @@ export function useAddPrompts() {
     mutationFn: ({ count, useNegative }: { count: number; useNegative: boolean }) => addPrompts(count, useNegative),
     onSuccess: (data, { useNegative }) => {
       qc.setQueryData(keys.pendingFor(useNegative), data);
-      void qc.invalidateQueries({ queryKey: ["pending"] });
+      void qc.invalidateQueries({ queryKey: keys.pending });
       void qc.invalidateQueries({ queryKey: keys.status });
     },
   });

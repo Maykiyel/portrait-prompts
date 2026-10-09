@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Button } from "@/shared/components/ui/button";
 import { copyText, seedLabel, summarize } from "@/lib/text";
 import { cn } from "@/shared/lib/utils";
-import { useCopied } from "@/features/prompts/copied-store";
+import { useCopied } from "./copied-store";
 
 export function PromptRow({ seed, prompt }: { seed: number; prompt: string }) {
   const [open, setOpen] = useState(false);
