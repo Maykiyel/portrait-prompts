@@ -102,7 +102,7 @@ Every prompt comes from a seed. A counter in `out/cursor.json` hands seeds out i
 
 - `template.txt` is the prompt. The first line is a version tag like `# portrait-v3`. It is stripped before use and saved in the manifest.
 - `negative.txt` is the list of things to avoid.
-- `sampler.ts` holds the attribute pools. Each placeholder in the template, like `{hair}`, matches a pool.
+- `core/sampler.ts` holds the attribute pools. Each placeholder in the template, like `{hair}`, matches a pool.
 
 Two rules keep your dataset consistent.
 
@@ -156,10 +156,14 @@ A page's own actions stay in that page's folder, and anything more than one page
 - `web/src/app/` is the wiring and nothing else: the router, the shell, the settings store, theme sync, and the boundary that keeps a fault in one page from blanking the app.
 - `web/src/features/<route>/` is one page plus whatever only that page uses. To add a page, make the folder, write the page there, and add the route to `web/src/app/router.tsx`. Routes load lazily, one dynamic import each.
 - `web/src/shared/` is what more than one page needs: the shadcn components in `shared/components/ui/`, the shared components in `shared/components/`, and the request helpers and query hooks in `shared/lib/`.
-- `web/src/lib/text.ts` is the browser's own Seed label. It cannot come from `output-folder.ts` without dragging the image library into the bundle, so the rule sits there and `smoke-audit.ts` holds it to one implementation.
-- `server/` is three modules: routes in `index.ts`, a thin client of the output folder in `store.ts`, API generation in `jobs.ts`. `shared/api-types.ts` holds the wire types both sides use.
+- `web/src/lib/text.ts` is the browser's own Seed label. It cannot come from `core/output-folder.ts` without dragging the image library into the bundle, so the rule sits there and `test/smoke-audit.ts` holds it to one implementation.
+- `server/` is three modules: routes in `index.ts`, a thin client of the output folder in `store.ts`, API generation in `jobs.ts`. `shared/api-types.ts` holds the wire types both sides use, and nothing else, because the browser imports from it and anything heavier would come along.
+- `cli/` is the four command-line entry points, `generate.ts`, `import-images.ts`, `export-prompts.ts` and `status.ts`. They are adapters and nothing more: each reaches the output folder through the core and stands on nothing else of ours.
+- `test/` is the offline suite, which needs no API key and no network: `smoke-test.ts` runs the pipeline with a fake Generator, `smoke-cli.ts` holds each command's own bytes, `smoke-audit.ts` holds the ownership claim, and `smoke-harness.ts` is the pass/fail helper they share.
 
-The Seed, Frame and Prompt rules live in the core, not in the folders. `output-folder.ts` is the only code that reads or writes `out/`, and it owns the folder layout, the Seed counter, the manifest, Prompt wording, and the Frame and Seed rules, all behind the one interface `openOutputFolder` returns. `sampler.ts` holds the attribute pools and takes the salt as an argument, `template.txt` and `negative.txt` are the Prompt files, and `GLOSSARY.md` gives the vocabulary.
+The Seed, Frame and Prompt rules live in the core, not in the folders. `core/output-folder.ts` is the only code that reads or writes `out/`, and it owns the folder layout, the Seed counter, the manifest, Prompt wording, and the Frame and Seed rules, all behind the one interface `openOutputFolder` returns. Its siblings are `core/sampler.ts`, which holds the attribute pools and takes the salt as an argument, `core/gemini.ts`, the one Generator, and `core/errors.ts`, the failure that carries a code rather than an HTTP status.
+
+The root holds configuration and the two Prompt files, not code: `template.txt` and `negative.txt` are read from the working directory, so every command finds them wherever you run it, and `GLOSSARY.md` gives the vocabulary.
 
 ## Troubleshooting
 

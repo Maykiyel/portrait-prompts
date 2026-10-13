@@ -8,11 +8,11 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
-import { ArchiveError } from "./errors";
-import { defaults, run } from "./generate";
-import { importImages } from "./import-images";
-import { openOutputFolder, seedLabel, type FileForImport } from "./output-folder";
-import { buildPrompt, pools } from "./sampler";
+import { ArchiveError } from "../core/errors";
+import { openOutputFolder, seedLabel, type FileForImport } from "../core/output-folder";
+import { buildPrompt, pools } from "../core/sampler";
+import { defaults, run } from "../cli/generate";
+import { importImages } from "../cli/import-images";
 import { runAudit } from "./smoke-audit";
 import { runCliContract } from "./smoke-cli";
 import {
@@ -32,7 +32,7 @@ runAudit();
 // filenames and the command line, and the browser states it for display,
 // because importing the module would drag the image library into the
 // bundle. Nothing may let the two drift apart.
-const { seedLabel: browserSeedLabel } = await import("./web/src/lib/text");
+const { seedLabel: browserSeedLabel } = await import("../web/src/lib/text");
 const labelSeeds = [1, 9, 10, 99, 100, 99999, 100000, 12345];
 results.push(check(
   "the module and the browser label the same Seeds identically",
@@ -149,7 +149,7 @@ const READER = `const { pathToFileURL } = require("node:url");
    process.stdout.write(JSON.stringify({ reads, broken }));
  })();`;
 const readers = [0, 1].map(() =>
-  execFile(process.execPath, ["--import", "tsx", "-e", READER, join(repoRoot, "output-folder.ts"), writerDir], {
+  execFile(process.execPath, ["--import", "tsx", "-e", READER, join(repoRoot, "core/output-folder.ts"), writerDir], {
     cwd: repoRoot,
   }),
 );
@@ -296,7 +296,7 @@ const promptDir = mkdtempSync(join(tempBase, "portrait-api-prompts-"));
 const previousOut = process.env.OUT_DIR;
 try {
   process.env.OUT_DIR = promptDir;
-  const { getPending } = await import("./server/store");
+  const { getPending } = await import("../server/store");
   const promptFolder = openOutputFolder(promptDir, "");
   promptFolder.issueSeeds(1);
   const withoutNegative = getPending("", false);
@@ -327,9 +327,9 @@ const savedKey = process.env.GEMINI_API_KEY;
 try {
   process.env.OUT_DIR = routeDir;
   process.env.GEMINI_API_KEY = "";
-  const { createApp, STATUS_BY_CODE } = await import("./server/index");
-  const { refusalFor } = await import("./server/jobs");
-  const codes = Object.keys(STATUS_BY_CODE) as import("./errors").ArchiveErrorCode[];
+  const { createApp, STATUS_BY_CODE } = await import("../server/index");
+  const { refusalFor } = await import("../server/jobs");
+  const codes = Object.keys(STATUS_BY_CODE) as import("../core/errors").ArchiveErrorCode[];
   const seeded = openOutputFolder(routeDir, "route-salt");
   seeded.issueSeeds(3); // Seeds 1 to 3 are waiting
   await seeded.importFrames([{ name: "one.png", buffer: await good() }], [1]);
@@ -347,7 +347,7 @@ try {
     form.append("seeds", JSON.stringify(seeds));
     return post("/api/import", form);
   };
-  const request: import("./shared/api-types").GenerateRequest = { count: 1, model: "flash", size: "1K", concurrency: 1, useNegative: false };
+  const request: import("../shared/api-types").GenerateRequest = { count: 1, model: "flash", size: "1K", concurrency: 1, useNegative: false };
 
   results.push(check("one table maps every ArchiveErrorCode to a status, and nothing keys on text",
     codes.length === 6 && codes.every((code) => typeof STATUS_BY_CODE[code] === "number")));

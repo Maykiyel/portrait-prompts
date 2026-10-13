@@ -5,8 +5,8 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import "dotenv/config";
 import type { GenerateRequest } from "../shared/api-types";
-import { ArchiveError, type ArchiveErrorCode } from "../errors";
-import { seedLabel } from "../output-folder";
+import { ArchiveError, type ArchiveErrorCode } from "../core/errors";
+import { seedLabel } from "../core/output-folder";
 import { getJob, refusalFor, startJob } from "./jobs";
 import {
   addPrompts, getPending, getStatus, importFiles, importRefusal, listImages, readFrame, readThumbnail, rejectFrame,
