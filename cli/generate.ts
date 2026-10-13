@@ -1,8 +1,11 @@
 import "dotenv/config";
-import { geminiGenerator, MODELS, type Generator } from "../core/gemini";
-import { namedSeeds, openOutputFolder } from "../core/output-folder";
+import { geminiGenerator, MODELS } from "../core/gemini";
+import {
+  run, type Generator, type ProgressEvent, type RunResult,
+} from "../core/generate";
 
-export type RunOptions = {
+/** What the command line was asked to do. `defaults` below is the policy. */
+export type CliOptions = {
   /** Leave undefined to continue from the seed counter. */
   start?: number;
   count: number;
@@ -17,7 +20,7 @@ export type RunOptions = {
   salt: string;
 };
 
-export const defaults: Omit<RunOptions, "salt"> = {
+export const defaults: Omit<CliOptions, "salt"> = {
   count: 10,
   concurrency: 3,
   model: MODELS.flash,
@@ -28,64 +31,45 @@ export const defaults: Omit<RunOptions, "salt"> = {
   dryRun: false,
 };
 
-export type RunHooks = {
-  onStart?: (total: number) => void;
-  onResult?: (r: { seed: number; ok: boolean; message?: string }) => void;
-};
-
-export async function run(opts: RunOptions, generate: Generator = geminiGenerator, hooks: RunHooks = {}) {
-  const folder = openOutputFolder(opts.outDir, opts.salt);
-
-  const seeds =
-    opts.start !== undefined
-      ? namedSeeds(folder, opts.start, opts.count, !opts.dryRun)
-      : folder.claimSeeds(opts.count, !opts.dryRun);
-  const todo = seeds.filter((seed) => !folder.hasFrame(seed));
-  console.log(
-    `${folder.status().version} | ${opts.model} | ${todo.length} to generate, ${seeds.length - todo.length} already done` +
-      (todo.length ? ` | seeds ${todo[0]} to ${todo[todo.length - 1]}` : ""),
-  );
-
-  hooks.onStart?.(todo.length);
-  let done = 0;
-  let failed = 0;
-  let next = 0;
-
-  async function worker() {
-    while (next < todo.length) {
-      const seed = todo[next++];
-      const prompt = folder.promptFor(seed, opts.useNegative);
-
-      try {
-        if (opts.dryRun) {
-          console.log(`\n[${seed}] ${prompt}`);
-          continue;
-        }
-        const buffer = await generate(prompt, opts);
-        await folder.writeFrame({ seed, buffer, model: opts.model, prompt });
-        done++;
-        hooks.onResult?.({ seed, ok: true });
-        console.log(`[${seed}] ok (${done}/${todo.length})`);
-      } catch (err) {
-        failed++;
-        const error = err instanceof Error ? err.message : String(err);
-        folder.recordAttempt({ seed, model: opts.model, prompt, status: "failed", error });
-        hooks.onResult?.({ seed, ok: false, message: error });
-        console.error(`[${seed}] failed: ${error}`);
-      }
+/**
+ * The adapter: it renders what the run reports and sets the exit code, and it
+ * owns nothing else. Every format string below is a byte contract, so they live
+ * here where the lines are printed rather than in the module that does the work.
+ */
+export async function generateImages(options: CliOptions, generate: Generator): Promise<RunResult> {
+  // The command line shows how many Frames have landed so far, which is a
+  // rendering decision: the run reports which Seeds succeeded and in what
+  // order, and the adapter counts them, so `ok (1/2)` exists nowhere in the core.
+  let landed = 0;
+  let total = 0;
+  const render = (event: ProgressEvent) => {
+    if (event.kind === "start") {
+      total = event.total;
+      const range = event.range ? ` | seeds ${event.range.first} to ${event.range.last}` : "";
+      console.log(
+        `${event.version} | ${options.model} | ${event.total} to generate, ${event.alreadyDone} already done${range}`,
+      );
+    } else if (event.kind === "prompt") {
+      console.log(`\n[${event.seed}] ${event.prompt}`);
+    } else if (event.ok) {
+      landed++;
+      console.log(`[${event.seed}] ok (${landed}/${total})`);
+    } else {
+      console.error(`[${event.seed}] failed: ${event.message}`);
     }
-  }
+  };
 
-  await Promise.all(Array.from({ length: Math.max(1, opts.concurrency) }, worker));
-  if (!opts.dryRun) {
-    console.log(`\nDone. ${done} ok, ${failed} failed. Output in ${opts.outDir}/`);
-    if (failed) console.log("Failed seeds stay pending and run first next time.");
+  const result = await run({ ...options, generate, onEvent: render });
+  // A dry run wrote nothing, so it has nothing to summarise.
+  if (!options.dryRun) {
+    console.log(`\nDone. ${result.done} ok, ${result.failed} failed. Output in ${options.outDir}/`);
+    if (result.failed) console.log("Failed seeds stay pending and run first next time.");
   }
-  return { done, failed };
+  return result;
 }
 
-function parseArgs(argv: string[]): RunOptions {
-  const o: RunOptions = { ...defaults, salt: (process.env.SEED_SALT ?? "").trim() };
+function parseArgs(argv: string[]): CliOptions {
+  const o: CliOptions = { ...defaults, salt: (process.env.SEED_SALT ?? "").trim() };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const v = () => argv[++i];
@@ -108,7 +92,7 @@ function parseArgs(argv: string[]): RunOptions {
 
 // Only run the CLI when this file is the entry point.
 if (process.argv[1]?.endsWith("generate.ts")) {
-  run(parseArgs(process.argv.slice(2))).then(({ failed }) => {
+  generateImages(parseArgs(process.argv.slice(2)), geminiGenerator).then(({ failed }) => {
     if (failed > 0) process.exitCode = 1;
   });
 }

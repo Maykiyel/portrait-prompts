@@ -9,7 +9,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { ArchiveError } from "../core/errors";
-import { defaults, run } from "../cli/generate";
+import {
+  run, type Generator, type PromptEvent, type ProgressEvent, type RunRequest, type SeedEvent, type StartEvent,
+} from "../core/generate";
 import { importImages } from "../cli/import-images";
 import { openOutputFolder, seedLabel, type FileForImport } from "../core/output-folder";
 import { buildPrompt, pools } from "../core/sampler";
@@ -19,7 +21,7 @@ import { createStore } from "../server/store";
 import { runAudit } from "./smoke-audit";
 import { runCliContract } from "./smoke-cli";
 import {
-  asyncCode, bad, check, errorCode, good, promptFiles, repoRoot, results, streamBytes,
+  asyncCode, bad, captureOutput, check, errorCode, good, promptFiles, repoRoot, results, streamBytes,
 } from "./smoke-harness";
 
 const out = "out-smoke";
@@ -42,26 +44,76 @@ results.push(check(
   labelSeeds.every((seed) => seedLabel(seed) === browserSeedLabel(seed)),
 ));
 
-// API path with the counter. Every line below asks the module; none of them reads
-// the counter file, lists the directory or opens a Frame by path.
+// The generation run, on its own: it claims Seeds, writes Frames, records
+// Attempts and reports progress as data. No terminal is involved anywhere in
+// this section — the run is asked what it did, the folder answers everything
+// else, and one check at the end watches the console to hold it silent.
 const apiFolder = openOutputFolder(out, "");
-await run({ ...defaults, count: 4, outDir: out, salt: "" }, good);
+const apiRequest = (over: Partial<RunRequest>, generate: Generator = good): RunRequest => ({
+  count: 1,
+  concurrency: 1,
+  model: "fake-model",
+  aspectRatio: "2:3",
+  imageSize: "1K",
+  useNegative: true,
+  dryRun: false,
+  outDir: out,
+  salt: "",
+  generate,
+  ...over,
+});
+const apiRun = async (over: Partial<RunRequest>, generate: Generator = good) => {
+  const events: ProgressEvent[] = [];
+  const result = await run({ ...apiRequest(over, generate), onEvent: (event) => events.push(event) });
+  return { events, result };
+};
+const starts = (events: ProgressEvent[]): StartEvent[] =>
+  events.filter((e): e is StartEvent => e.kind === "start");
+const seedResults = (events: ProgressEvent[]): SeedEvent[] =>
+  events.filter((e): e is SeedEvent => e.kind === "seed");
+const prompted = (events: ProgressEvent[]): PromptEvent[] =>
+  events.filter((e): e is PromptEvent => e.kind === "prompt");
+
+const first = await apiRun({ count: 4 });
 results.push(check(
   "first run makes seeds 1 to 4, counter at 5",
   apiFolder.status().next === 5 && apiFolder.listFrames().map((f) => f.seed).join() === "4,3,2,1",
 ));
-await run({ ...defaults, count: 2, outDir: out, salt: "" }, good);
+const opened = starts(first.events)[0];
+results.push(check(
+  "the start event carries the five facts the run learned from the folder",
+  !!opened && opened.version === apiFolder.status().version && opened.total === 4 &&
+    opened.alreadyDone === 0 && opened.range?.first === 1 && opened.range?.last === 4 &&
+    // Exactly those five, and nothing else. The model, the root and the salt
+    // are on this list too, and the run must not hand them back: the caller
+    // supplied every one of them and would only be told what it already knew.
+    Object.keys(opened ?? {}).sort().join() === "alreadyDone,kind,range,total,version" &&
+    starts(first.events).length === 1 && first.events[0] === opened,
+));
+results.push(check(
+  "one Seed event per Seed touched, and every Frame is on disk when it arrives",
+  seedResults(first.events).map((e) => `${e.seed}:${e.ok}`).join() === "1:true,2:true,3:true,4:true" &&
+    seedResults(first.events).every((e) => !("message" in e)) &&
+    first.result.done === 4 && first.result.failed === 0 &&
+    apiFolder.listFrames().map((f) => f.seed).join() === "4,3,2,1",
+));
+await apiRun({ count: 2 });
 results.push(check("second run continues at 5 and 6", apiFolder.hasFrame(6) && apiFolder.status().next === 7));
-await run({ ...defaults, count: 2, outDir: out, salt: "" }, bad);
+const fated = await apiRun({ count: 2 }, bad);
 results.push(check(
   "failed run uses 7 and 8, no images",
   !apiFolder.hasFrame(7) && !apiFolder.hasFrame(8) && apiFolder.status().next === 9,
 ));
 results.push(check(
+  "a failed Seed is reported with the message it failed with, and only a failure carries one",
+  seedResults(fated.events).map((e) => `${e.seed}:${e.ok}:${e.message}`).join() ===
+    "7:false:fake quota error,8:false:fake quota error" && fated.result.done === 0 && fated.result.failed === 2,
+));
+results.push(check(
   "a failed run records an Attempt for every Seed it tried",
   apiFolder.status().failed === 2 && apiFolder.waitingSeeds().join() === "7,8",
 ));
-await run({ ...defaults, count: 2, outDir: out, salt: "" }, good);
+await apiRun({ count: 2 });
 results.push(
   check(
     "next run retries 7 and 8 and does not advance",
@@ -74,10 +126,50 @@ results.push(check(
 ));
 const meta = await sharp(await streamBytes(apiFolder.readFrame(1))).metadata();
 results.push(check("final image is 768x1152", meta.width === 768 && meta.height === 1152));
-await run({ ...defaults, count: 3, outDir: out, dryRun: true, salt: "" }, good);
+const dry = await apiRun({ count: 3, dryRun: true });
+results.push(check(
+  "a dry run reports the Prompt for every Seed and no result at all",
+  // Seeds 1 to 8 all have Frames by now, so all three are fresh ones: 9, 10, 11.
+  dry.events.length === 4 && starts(dry.events)[0].total === 3 && seedResults(dry.events).length === 0 &&
+    prompted(dry.events).map((e) => `${e.seed}:${e.prompt === apiFolder.promptFor(e.seed, true)}`).join() ===
+      "9:true,10:true,11:true" && dry.result.done === 0 && dry.result.failed === 0,
+));
 results.push(check(
   "dry run leaves counter alone",
   apiFolder.status().next === 9 && apiFolder.status().done === 8 && apiFolder.waitingSeeds().join() === "",
+));
+const nothing = await apiRun({ start: 1, count: 8 });
+const barren = starts(nothing.events)[0];
+results.push(check(
+  "a run with nothing left to generate reports no Seed range at all",
+  !!barren && barren.total === 0 && barren.alreadyDone === 8 && !("range" in barren) &&
+    nothing.events.length === 1 && nothing.result.done === 0 && nothing.result.failed === 0 &&
+    apiFolder.status().next === 9,
+));
+const named = await apiRun({ start: 20, count: 2 });
+results.push(check(
+  "an explicit start fills the gap up to the last Seed it names",
+  apiFolder.status().next === 22 && apiFolder.hasFrame(20) && apiFolder.hasFrame(21) &&
+    starts(named.events)[0].range?.first === 20 && starts(named.events)[0].range?.last === 21 &&
+    seedResults(named.events).map((e) => e.seed).join() === "20,21",
+));
+const namedDry = await apiRun({ start: 30, count: 2, dryRun: true });
+results.push(check(
+  "a dry run names Seeds by hand without committing or moving the counter",
+  apiFolder.status().next === 22 && prompted(namedDry.events).map((e) => e.seed).join() === "30,31" &&
+    !apiFolder.hasFrame(30) && !apiFolder.hasFrame(31),
+));
+const narrated = await captureOutput(() => apiRun({ count: 1 }));
+results.push(check("the generation run writes nothing to a terminal", narrated.length === 0));
+// There is nothing to pass but a request and nothing to receive but a result: a
+// caller who names no channel at all gets the Frames written and a plain value
+// back, and still hears nothing.
+const framesBefore = apiFolder.status().done;
+let result: { done: number; failed: number } = { done: 0, failed: 0 };
+const hush = await captureOutput(async () => { result = await run(apiRequest({ count: 1 })); });
+results.push(check(
+  "a caller that names no channel gets a plain result, the Frame, and no output",
+  result.done === 1 && result.failed === 0 && apiFolder.status().done === framesBefore + 1 && hush.length === 0,
 ));
 
 // Manual path with the counter
@@ -311,7 +403,7 @@ try {
   results.push(check("API appends the Negative list only when requested",
     !withoutNegative.items[0].prompt.includes("\n\nAvoid:") && withNegative.items[0].prompt.includes("\n\nAvoid:")));
   let sent = "";
-  await run({ ...defaults, outDir: promptDir, count: 1, salt: "", useNegative: true }, async (prompt) => {
+  await apiRun({ outDir: promptDir, count: 1, useNegative: true }, async (prompt) => {
     sent = prompt;
     return good();
   });
@@ -335,7 +427,7 @@ try {
   const seeded = openOutputFolder(routeDir, "route-salt");
   seeded.issueSeeds(3); // Seeds 1 to 3 are waiting
   await seeded.importFrames([{ name: "one.png", buffer: await good() }], [1]);
-  const api = createApp({ outDir: routeDir, salt: "route-salt" });
+  const api = createApp({ outDir: routeDir, salt: "route-salt" }, good);
   // A route that raises each code with a message nobody would ever write, so the
   // status can only have come from the code.
   for (const code of codes)
@@ -396,7 +488,7 @@ try {
   results.push(check("an impossible Seed is refused with the invalid-Seed status",
     (await api.request("/api/images/0/file")).status === STATUS_BY_CODE["invalid-seed"]));
   results.push(check("a mismatched salt is refused with the salt-mismatch status",
-    (await createApp({ outDir: routeDir, salt: "wrong-salt" })
+    (await createApp({ outDir: routeDir, salt: "wrong-salt" }, good)
       .request("/api/prompts/pending")).status === STATUS_BY_CODE["salt-mismatch"]));
 
   const partial = await images(
@@ -438,6 +530,86 @@ try {
   const busy = refusalFor({ status: "running", total: 0, done: 0, failed: 0, log: [] }, true, request);
   results.push(check("the Job refuses to start while one is running",
     busy?.status === 409 && busy.message === "A job is already running"));
+
+  // The Job, started through the route, driven by a fake Generator. This is the
+  // highest seam in the suite: one request reaches the route, the archive, the
+  // Job state the browser polls and the run underneath them, with no API key in
+  // use and no network. The key below is only what the refusal check looks for —
+  // the Job asks the process whether one is set, and the fake never asks for one.
+  const jobNow = async () =>
+    (await (await api.request("/api/generate/job")).json()) as import("../shared/api-types").JobState;
+  const start = (body: unknown) =>
+    api.request("/api/generate", { method: "POST", body: JSON.stringify(body) });
+  // The run is not awaited by the route, so the Job is polled the way the
+  // browser polls it until it leaves running.
+  const settle = async () => {
+    for (let attempt = 0; attempt < 750; attempt++) {
+      const state = await jobNow();
+      if (state.status !== "running") return state;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return jobNow();
+  };
+  results.push(check("a Job that has not started reports idle", (await jobNow()).status === "idle"));
+  process.env.GEMINI_API_KEY = "a-key-the-fake-Generator-never-uses";
+  // One worker throughout: the log is newest-first, so which Seed arrives last is
+  // the order of the work, and with more than one worker that is a race rather
+  // than a fact about the Job. Concurrency itself is the run's business and is
+  // exercised where a result is what matters, not an order.
+  const startedAtOnce = (await (await start({ count: 2, model: "flash", size: "1K", concurrency: 1, useNegative: false })).json()) as
+    import("../shared/api-types").JobState;
+  results.push(check(
+    "starting a Job answers at once, running, with the total the run reported",
+    startedAtOnce.status === "running" && startedAtOnce.total === 2 && startedAtOnce.done === 0 &&
+      startedAtOnce.failed === 0 && startedAtOnce.model === "gemini-3.1-flash-image" &&
+      startedAtOnce.log.length === 0 && typeof startedAtOnce.startedAt === "string",
+  ));
+  const landed = await settle();
+  const landedFrames = (await (await api.request("/api/images")).json()) as import("../shared/api-types").ImageItem[];
+  results.push(check(
+    "a finished Job left its Frames in the archive and its per-Seed log newest-first",
+    landed.status === "done" && landed.total === 2 && landed.done === 2 && landed.failed === 0 &&
+      landed.log.map((entry) => `${entry.seed}:${entry.ok}`).join() === "3:true,2:true" &&
+      landedFrames.map((one) => one.seed).join() === "3,2,1" &&
+      typeof landed.finishedAt === "string" && landed.error === undefined,
+  ));
+
+  // A second app over the same dataset, with a Generator that fails. Two apps
+  // are legitimate: the Job is one per process today (#32 gives each app its
+  // own), and what is under test here is the translation, not the sharing.
+  const failingApi = createApp({ outDir: routeDir, salt: "route-salt" }, bad);
+  const startFailing = (body: unknown) =>
+    failingApi.request("/api/generate", { method: "POST", body: JSON.stringify(body) });
+  await startFailing({ count: 2, model: "flash", size: "1K", concurrency: 1, useNegative: false });
+  const faulted = await settle();
+  results.push(check(
+    "a Job that fails counts the failures and logs the Seeds that failed, which stay waiting",
+    faulted.status === "done" && faulted.total === 2 && faulted.done === 0 && faulted.failed === 2 &&
+      faulted.log.map((entry) => `${entry.seed}:${entry.ok}:${entry.message}`).join() ===
+        "5:false:fake quota error,4:false:fake quota error" &&
+      seeded.waitingSeeds().join() === "4,5" && seeded.status().next === 6,
+  ));
+  await startFailing({ count: 60, model: "flash", size: "1K", concurrency: 1, useNegative: false });
+  const capped = await settle();
+  results.push(check(
+    "the per-Seed log keeps the newest fifty entries and lets the rest go",
+    // Seeds 4 and 5 are still waiting from the failed Job above, so this run
+    // finishes those two first and then takes 58 fresh ones: 6 to 63.
+    capped.total === 60 && capped.done === 0 && capped.failed === 60 && capped.log.length === 50 &&
+      capped.log[0].seed === 63 && capped.log[49].seed === 14 && seeded.status().next === 64,
+  ));
+
+  // The fourth status: a run that cannot start at all. An unreadable counter is
+  // refused by the folder, so the run never gets going and the Job says so
+  // rather than reporting a Job that quietly did nothing.
+  writeFileSync(join(routeDir, "cursor.json"), "{ corrupt");
+  await start({ count: 1, model: "flash", size: "1K", concurrency: 1, useNegative: false });
+  const broken = await settle();
+  results.push(check(
+    "a run that cannot start leaves the Job in error with what went wrong",
+    broken.status === "error" && typeof broken.error === "string" && broken.error.includes("counter") &&
+      typeof broken.finishedAt === "string",
+  ));
 } finally {
   if (savedKey === undefined) delete process.env.GEMINI_API_KEY;
   else process.env.GEMINI_API_KEY = savedKey;
@@ -471,7 +643,7 @@ try {
   // Fixture setup asks the module directly; every assertion below is an HTTP
   // response from an app.
   process.chdir(join(pairBase, "alpha-prompt-files"));
-  const alpha = createApp({ outDir: alphaDir, salt: "alpha" });
+  const alpha = createApp({ outDir: alphaDir, salt: "alpha" }, good);
   const alphaFolder = openOutputFolder(alphaDir, "alpha");
   alphaFolder.issueSeeds(2);
   await alphaFolder.importFrames([{ name: "alpha.png", buffer: await good() }], [1]);
@@ -485,7 +657,7 @@ try {
   // The second app gets a different root, a different Seed salt and different
   // Prompt files. Nothing about the first app may move.
   process.chdir(join(pairBase, "beta-prompt-files"));
-  const beta = createApp({ outDir: betaDir, salt: "" });
+  const beta = createApp({ outDir: betaDir, salt: "" }, good);
   openOutputFolder(betaDir, "").issueSeeds(1); // Seed 1 waiting, no Frame
   // The second app is asked first, on purpose: if the archive were one per
   // process, answering the beta app would be what moved the alpha app, and the

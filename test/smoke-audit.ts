@@ -208,4 +208,42 @@ export function runAudit(): void {
       !reachesThroughCore(repoPath(plantedEntry), withEntry) &&
       withEntry.has(repoPath(plantedEntry)),
   ));
+
+  // The generation run writes to no terminal and names no image vendor. Asked of
+  // the run and of everything it stands on rather than of one file's text, so a
+  // print that arrives through a module the run imports counts as the run
+  // printing — and so the vendor client cannot come back in under the run's arm
+  // without this turning red. A grep does the same job by hand; this does it on
+  // every run, over the files as they are now.
+  const RUN = "core/generate.ts";
+  const textOf = (sources: Map<string, string>, file: string) =>
+    sources.get(file) ?? readFileSync(join(repoRoot, file), "utf8");
+  // The run's own text and every module it stands on. Comments are not code, so
+  // a module that says in prose that it prints is not printing.
+  const narrates = (sources: Map<string, string>, entry: string): string[] =>
+    [entry, ...graphFrom(entry, sources)].filter((f) =>
+      /console\.|@google\/genai/.test(code(textOf(sources, f))));
+  const runGraph = graphFrom(RUN, sourceText);
+  const narrators = narrates(sourceText, RUN);
+  results.push(check(
+    "the generation run writes to no terminal and stands on no vendor",
+    // The graph has to be non-empty, or "nothing in it prints" is true of
+    // nothing at all. Reaching the owner is what a run that touches the output
+    // folder must do.
+    known.has(RUN) && runGraph.has(OWNER) && runGraph.size > 1 && narrators.length === 0,
+  ));
+  for (const f of narrators) console.log(`      ${f} prints or names a vendor`);
+
+  // And it is not vacuous: a print in the run's own text and a print in one of the
+  // modules it stands on both turn it red. The planted text never reaches disk —
+  // what is under test is that this check reaches a verdict about it.
+  const own = new Map(sourceText);
+  own.set(RUN, `${textOf(sourceText, RUN)}\nconsole.log("a print inside the run itself");\n`);
+  const beneath = new Map(sourceText);
+  beneath.set(OWNER, `${textOf(sourceText, OWNER)}\nconsole.warn("a print inside the module the run stands on");\n`);
+  results.push(check(
+    "the run's silence is not vacuous: a print in the run, or in a module it stands on, turns it red",
+    narrates(own, RUN).includes(RUN) && narrates(beneath, RUN).includes(OWNER) &&
+      !narrators.includes(RUN) && !narrators.includes(OWNER),
+  ));
 }
