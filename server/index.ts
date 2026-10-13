@@ -4,8 +4,10 @@ import { Hono, type Context } from "hono";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import "dotenv/config";
+import { geminiGenerator } from "../core/gemini";
 import type { GenerateRequest } from "../shared/api-types";
 import { ArchiveError, type ArchiveErrorCode } from "../core/errors";
+import type { Generator } from "../core/generate";
 import { seedLabel } from "../core/output-folder";
 import { getJob, refusalFor, startJob } from "./jobs";
 import {
@@ -28,9 +30,11 @@ const send = (c: Context, stream: FrameStream) => c.body(Readable.toWeb(stream) 
  * An app serves exactly one dataset, handed to it rather than found: the root
  * says which output folder, the salt says which run of Seeds is legitimate there.
  * Nothing inside reads the environment, so every app in a process is its own
- * dataset and a test can point one at a temporary directory.
+ * dataset and a test can point one at a temporary directory. The Generator is
+ * handed in with it rather than found either, so a route can start a Job without
+ * naming an image vendor and a test can drive one with a fake.
  */
-export function createApp(dataset: Dataset): Hono {
+export function createApp(dataset: Dataset, generate: Generator): Hono {
   const app = new Hono();
   const store = createStore(dataset);
 
@@ -90,7 +94,7 @@ export function createApp(dataset: Dataset): Hono {
     const req = await c.req.json<GenerateRequest>();
     const refused = refusalFor(getJob(), Boolean(process.env.GEMINI_API_KEY), req);
     if (refused) return c.json({ error: refused.message }, refused.status);
-    return c.json(startJob(req, dataset));
+    return c.json(startJob(req, dataset, generate));
   });
   api.get("/generate/job", (c) => c.json(getJob()));
 
@@ -98,10 +102,10 @@ export function createApp(dataset: Dataset): Hono {
   return app;
 }
 
-// The composition root: the one place the environment names a dataset. Both
-// values are read once here and handed to the app, as they always were.
+// The composition root: the one place the environment names a dataset and the
+// one place this process names a vendor. Both are read once here and handed on.
 const dataset: Dataset = { outDir: process.env.OUT_DIR ?? "out", salt: (process.env.SEED_SALT ?? "").trim() };
-const app = createApp(dataset);
+const app = createApp(dataset, geminiGenerator);
 
 // Built UI, when it exists. In development Vite serves the UI instead.
 const dist = "./web/dist";

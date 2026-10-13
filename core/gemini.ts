@@ -1,13 +1,9 @@
 import "dotenv/config";
 import { GoogleGenAI } from "@google/genai";
-
-export type GenOptions = {
-  model: string;
-  aspectRatio: string;
-  imageSize: string;
-};
-
-export type Generator = (prompt: string, opts: GenOptions) => Promise<Buffer>;
+// The seam is declared by the module that stands on it, so this file is the
+// implementation of a shape it does not own. It is a type-only import: nothing
+// here is needed to name the Generator, and the run never loads this module.
+import type { Generator } from "./generate";
 
 export const MODELS = {
   lite: "gemini-3.1-flash-lite-image", // fastest and cheapest, 1K only

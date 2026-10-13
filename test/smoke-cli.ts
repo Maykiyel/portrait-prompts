@@ -2,32 +2,21 @@
 // reason: the four entry points' own output, byte for byte. These checks
 // compare each command's own output with what it printed before the
 // migration, and cross-check it against what the module says about the folder.
+// The generate checks wrap the command line's adapter, not the run underneath
+// it: the contract being defended is still what a person sees on a terminal,
+// and the run has no terminal left to be seen on.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import sharp from "sharp";
-import { defaults, run } from "../cli/generate";
+import { defaults, generateImages } from "../cli/generate";
 import { importImages } from "../cli/import-images";
 import { openOutputFolder } from "../core/output-folder";
-import { asyncCode, bad, check, good, promptFiles, repoRoot, results, streamBytes } from "./smoke-harness";
+import { asyncCode, bad, captureOutput, check, good, promptFiles, repoRoot, results, streamBytes } from "./smoke-harness";
 
 export async function runCliContract(): Promise<void> {
   const cliVersion = promptFiles().version;
-  const captureCli = async (action: () => Promise<unknown> | unknown) => {
-    const captured: string[] = [];
-    const log = console.log;
-    const err = console.error;
-    console.log = (...a: unknown[]) => { captured.push(a.map(String).join(" ")); };
-    console.error = (...a: unknown[]) => { captured.push(a.map(String).join(" ")); };
-    try {
-      await action();
-    } finally {
-      console.log = log;
-      console.error = err;
-    }
-    return captured;
-  };
   // A command run as a real process, so its argv parsing and exit code are exercised.
   const spawnCli = (script: string, args: string[], env: Record<string, string> = {}) =>
     new Promise<{ code: number; output: string; error: string }>((resolve) => {
@@ -99,7 +88,7 @@ export async function runCliContract(): Promise<void> {
   }
   const impFolder = openOutputFolder(impOut, "");
   impFolder.issueSeeds(3);
-  const imported = await captureCli(() =>
+  const imported = await captureOutput(() =>
     importImages({ inDir: impIn, outDir: impOut, dryRun: false, salt: "" }),
   );
   results.push(check(
@@ -128,7 +117,7 @@ export async function runCliContract(): Promise<void> {
   rmSync(shortOut, { recursive: true, force: true });
   openOutputFolder(shortOut, "").issueSeeds(1);
   let refusal = "no error";
-  await captureCli(async () => {
+  await captureOutput(async () => {
     try {
       await importImages({ inDir: impIn, outDir: shortOut, dryRun: false, salt: "" });
     } catch (err) {
@@ -144,7 +133,7 @@ export async function runCliContract(): Promise<void> {
   const dryOut = "out-smoke9";
   rmSync(dryOut, { recursive: true, force: true });
   openOutputFolder(dryOut, "").issueSeeds(3);
-  const dryRun = await captureCli(() =>
+  const dryRun = await captureOutput(() =>
     importImages({ inDir: impIn, outDir: dryOut, dryRun: true, salt: "" }),
   );
   results.push(check(
@@ -163,7 +152,8 @@ export async function runCliContract(): Promise<void> {
   const runOut = "out-smoke11";
   rmSync(runOut, { recursive: true, force: true });
   // One worker, so the order of these lines is fixed rather than a race.
-  const failLines = await captureCli(() => run({ ...defaults, count: 3, concurrency: 1, outDir: runOut, salt: "" }, bad));
+  const failLines = await captureOutput(() =>
+    generateImages({ ...defaults, count: 3, concurrency: 1, outDir: runOut, salt: "" }, bad));
   const runFolder = openOutputFolder(runOut, "");
   results.push(check(
     "a failing run prints the same lines and leaves every Seed waiting",
@@ -179,7 +169,8 @@ export async function runCliContract(): Promise<void> {
       runFolder.status().failed === 3,
   ));
   // One worker, so the order of these lines is fixed rather than a race.
-  const retryLines = await captureCli(() => run({ ...defaults, count: 2, concurrency: 1, outDir: runOut, salt: "" }, good));
+  const retryLines = await captureOutput(() =>
+    generateImages({ ...defaults, count: 2, concurrency: 1, outDir: runOut, salt: "" }, good));
   results.push(check(
     "the next run finishes Waiting Seeds first and does not advance the counter",
     retryLines.join("\n") === [
@@ -191,8 +182,8 @@ export async function runCliContract(): Promise<void> {
       runFolder.waitingSeeds().join() === "3" && runFolder.status().next === 4 &&
       runFolder.status().done === 2 && runFolder.status().failed === 1,
   ));
-  const dryRunLines = await captureCli(() =>
-    run({ ...defaults, count: 2, outDir: runOut, dryRun: true, salt: "" }, good),
+  const dryRunLines = await captureOutput(() =>
+    generateImages({ ...defaults, count: 2, outDir: runOut, dryRun: true, salt: "" }, good),
   );
   results.push(check(
     "a dry run prints the Prompt, moves no counter and writes no Frame",
@@ -223,7 +214,8 @@ export async function runCliContract(): Promise<void> {
   ));
   results.push(check(
     "the run still refuses an unreadable counter instead of starting again",
-    await asyncCode(() => run({ ...defaults, count: 1, outDir: cliOut, dryRun: true, salt: "" }, good)) ===
+    await asyncCode(() =>
+      generateImages({ ...defaults, count: 1, outDir: cliOut, dryRun: true, salt: "" }, good)) ===
       "unreadable-counter",
   ));
 

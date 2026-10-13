@@ -20,6 +20,27 @@ export const bad = async () => {
   throw new Error("fake quota error");
 };
 
+/**
+ * Everything a block of code writes to the terminal, captured rather than shown.
+ * The byte-contract checks compare what came out, and a silence check wants it
+ * empty. Patching every console method rather than the two the command line
+ * uses: a stray print is a stray print whatever it is called.
+ */
+export const captureOutput = async (action: () => Promise<unknown> | unknown): Promise<string[]> => {
+  const captured: string[] = [];
+  const take = (...a: unknown[]) => { captured.push(a.map(String).join(" ")); };
+  const original = {
+    log: console.log, error: console.error, warn: console.warn, info: console.info, debug: console.debug,
+  };
+  console.log = take; console.error = take; console.warn = take; console.info = take; console.debug = take;
+  try {
+    await action();
+  } finally {
+    Object.assign(console, original);
+  }
+  return captured;
+};
+
 // The three ways a check observes the module: a stream it was handed, the code on
 // an error it raised, or a value it returned. Nothing here reads the archive.
 export const streamBytes = async (stream: NodeJS.ReadableStream) => {
