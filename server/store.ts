@@ -1,65 +1,78 @@
 import { openOutputFolder, type OutputFolder } from "../output-folder";
 import type { ImageItem, ImportResult, PromptsResponse, Status } from "../shared/api-types";
 
-/** Where the output folder is. OUT_DIR still decides, as it always has. */
-export const outDir = () => process.env.OUT_DIR ?? "out";
+/**
+ * An app is pointed at one dataset: an output folder root, and the Seed salt that
+ * guards it. Both are injected rather than read here, so the routes cannot be
+ * talked into serving a different folder by a process-wide variable, and a test
+ * hands over a temporary root instead of rearranging the environment.
+ */
+export type Dataset = { outDir: string; salt: string };
 
 /** The module's stream type, taken from the interface rather than from node:fs. */
 export type FrameStream = ReturnType<OutputFolder["readFrame"]>;
 
-let opened: { root: string; salt: string; folder: OutputFolder } | undefined;
-
-/**
- * The one owner of the output folder, opened once per root and salt so the Prompt
- * files are read once rather than on every request. The salt arrives from the
- * composition root on every call, so a test or a second dataset can open its own.
- */
-const archive = (salt: string): OutputFolder => {
-  const root = outDir();
-  if (opened?.root !== root || opened.salt !== salt)
-    opened = { root, salt, folder: openOutputFolder(root, salt) };
-  return opened.folder;
+/** Everything the routes ask of one dataset. The folder's location never leaves it. */
+export type Store = {
+  getStatus(): Status;
+  getPending(useNegative?: boolean): PromptsResponse;
+  addPrompts(count: number, useNegative?: boolean): PromptsResponse;
+  listImages(): ImageItem[];
+  readFrame(seed: number, raw?: boolean): FrameStream;
+  readThumbnail(seed: number, width: number): Promise<FrameStream>;
+  rejectFrame(seed: number): void;
+  importFiles(files: File[], seeds: number[]): Promise<ImportResult[]>;
 };
 
-export function getStatus(salt: string): Status {
-  const { version, next, done, waiting, saltSet, problem } = archive(salt).status();
-  return { version, next, done, waiting, saltSet, problem, hasApiKey: Boolean(process.env.GEMINI_API_KEY) };
-}
-
-const promptsFor = (salt: string, seeds: number[], useNegative: boolean): PromptsResponse =>
-  ({ items: archive(salt).promptsFor(seeds, useNegative) });
-
-export function getPending(salt: string, useNegative = false): PromptsResponse {
-  return promptsFor(salt, archive(salt).waitingSeeds(), useNegative);
-}
-
-/** Issues `count` new Seeds and returns every waiting prompt, new ones included. */
-export function addPrompts(salt: string, count: number, useNegative = false): PromptsResponse {
-  archive(salt).issueSeeds(count);
-  return promptsFor(salt, archive(salt).waitingSeeds(), useNegative);
-}
-
-export const listImages = (salt: string): ImageItem[] => archive(salt).listFrames();
-
-/** A Frame or its Raw image, as a stream. The folder's location never leaves the module. */
-export const readFrame = (salt: string, seed: number, raw = false): FrameStream =>
-  archive(salt).readFrame(seed, raw);
-
-export const readThumbnail = (salt: string, seed: number, width: number): Promise<FrameStream> =>
-  archive(salt).readThumbnail(seed, width);
-
-/** Removes the Frame so its Seed goes back to waiting. The Manifest keeps a record. */
-export const rejectFrame = (salt: string, seed: number): void => archive(salt).rejectFrame(seed);
-
 /**
- * A batch that breaks an invariant is refused whole; a file that cannot be read
- * comes back as one failed result, so the rest of the batch still lands.
+ * One dataset's archive, opened on first use so the Prompt files are read once
+ * rather than on every request, and remembered here rather than in a module
+ * global. A global would be one folder per process, shared by every app: two apps
+ * would take turns re-opening each other's archive, and each would answer with
+ * the Prompt files whichever app asked last.
  */
-export const importFiles = async (salt: string, files: File[], seeds: number[]): Promise<ImportResult[]> =>
-  archive(salt).importFrames(
-    await Promise.all(files.map(async (file) => ({ name: file.name, buffer: Buffer.from(await file.arrayBuffer()) }))),
-    seeds,
-  );
+export function createStore({ outDir, salt }: Dataset): Store {
+  let opened: OutputFolder | undefined;
+  const archive = (): OutputFolder => (opened ??= openOutputFolder(outDir, salt));
+
+  const getStatus = (): Status => {
+    const { version, next, done, waiting, saltSet, problem } = archive().status();
+    return { version, next, done, waiting, saltSet, problem, hasApiKey: Boolean(process.env.GEMINI_API_KEY) };
+  };
+
+  const promptsFor = (seeds: number[], useNegative: boolean): PromptsResponse =>
+    ({ items: archive().promptsFor(seeds, useNegative) });
+
+  const getPending = (useNegative = false): PromptsResponse =>
+    promptsFor(archive().waitingSeeds(), useNegative);
+
+  /** Issues `count` new Seeds and returns every waiting prompt, new ones included. */
+  const addPrompts = (count: number, useNegative = false): PromptsResponse => {
+    archive().issueSeeds(count);
+    return promptsFor(archive().waitingSeeds(), useNegative);
+  };
+
+  const listImages = (): ImageItem[] => archive().listFrames();
+
+  const readFrame = (seed: number, raw = false): FrameStream => archive().readFrame(seed, raw);
+
+  const readThumbnail = (seed: number, width: number): Promise<FrameStream> => archive().readThumbnail(seed, width);
+
+  /** Removes the Frame so its Seed goes back to waiting. The Manifest keeps a record. */
+  const rejectFrame = (seed: number): void => archive().rejectFrame(seed);
+
+  /**
+   * A batch that breaks an invariant is refused whole; a file that cannot be
+   * read comes back as one failed result, so the rest of the batch still lands.
+   */
+  const importFiles = async (files: File[], seeds: number[]): Promise<ImportResult[]> =>
+    archive().importFrames(
+      await Promise.all(files.map(async (file) => ({ name: file.name, buffer: Buffer.from(await file.arrayBuffer()) }))),
+      seeds,
+    );
+
+  return { getStatus, getPending, addPrompts, listImages, readFrame, readThumbnail, rejectFrame, importFiles };
+}
 
 /** Why an import is refused before it reaches the module. The route turns this into a response, so no refusal here carries a status from the module. */
 export type ImportRefusal = { status: 400; message: string };

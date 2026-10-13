@@ -1,7 +1,7 @@
 import type { GenerateRequest, JobState } from "../shared/api-types";
 import { defaults, run } from "../generate";
 import { MODELS } from "../gemini";
-import { outDir } from "./store";
+import type { Dataset } from "./store";
 
 const fresh = (): JobState => ({ status: "idle", total: 0, done: 0, failed: 0, log: [] });
 let job: JobState = fresh();
@@ -21,7 +21,13 @@ export function refusalFor(current: JobState, hasApiKey: boolean, req: GenerateR
   return undefined;
 }
 
-export function startJob(req: GenerateRequest, salt: string) {
+/**
+ * The Job is a module global for now — one per process, and giving the app its
+ * own is #32's work. Only the dataset is injected: the Job writes Frames into the
+ * same archive the routes serve, so it takes the same pointed-at folder rather
+ * than reaching for the environment to find one.
+ */
+export function startJob(req: GenerateRequest, { outDir, salt }: Dataset) {
   const model = MODELS[req.model];
   const size = req.model === "lite" ? "1K" : req.size;
 
@@ -34,7 +40,7 @@ export function startJob(req: GenerateRequest, salt: string) {
       imageSize: size,
       concurrency: Math.min(Math.max(1, req.concurrency), 8),
       useNegative: req.useNegative,
-      outDir: outDir(),
+      outDir,
       salt,
     },
     undefined,
