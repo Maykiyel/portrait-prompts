@@ -127,7 +127,7 @@ Flags worth knowing.
 - `prompts` takes `--count` (default 20), `--start`, `--out`, `--dir` and `--no-negative`.
 - `import-images` takes `--in` (required), `--start`, `--out` and `--dry-run`. Files are matched to the oldest waiting seeds by download time. Run it with `--dry-run` first.
 - `generate` takes `--count` (default 10), `--model lite|flash|pro`, `--size 1K|2K|4K`, `--aspect`, `--concurrency`, `--start`, `--out`, `--no-negative` and `--dry-run`.
-- `--start N` skips the counter and leaves it unchanged. Dry runs never move it.
+- `--start N` names the Seeds by hand instead of following the counter. `generate` and `import-images` still record them, so the counter moves past them and the same Seed is never handed out twice. `prompts` only writes the HTML page, so it leaves the counter alone. A dry run never moves it.
 
 Model names are `gemini-3.1-flash-lite-image` for `lite`, `gemini-3.1-flash-image` for `flash`, and `gemini-3-pro-image` for `pro`. The lite model supports 1K only. Rate limit and server errors retry up to 5 times with backoff. Quota errors such as "limit: 0" fail at once, because retrying never helps.
 
