@@ -13,6 +13,9 @@ import { defaults, run } from "./generate";
 import { importImages } from "./import-images";
 import { openOutputFolder, seedLabel, type FileForImport } from "./output-folder";
 import { buildPrompt, pools } from "./sampler";
+import { createApp, STATUS_BY_CODE } from "./server/index";
+import { refusalFor } from "./server/jobs";
+import { createStore } from "./server/store";
 import { runAudit } from "./smoke-audit";
 import { runCliContract } from "./smoke-cli";
 import {
@@ -291,16 +294,16 @@ try {
 }
 
 // The free route receives finished Prompt text from the API. Compare it to
-// the existing generator with a fake Buffer result: no key or remote call.
+// the existing generator with a fake Buffer result: no key or remote call. The
+// store is handed the folder it serves, so this block needs no environment and
+// no import ordering: the two lines below could sit in any order.
 const promptDir = mkdtempSync(join(tempBase, "portrait-api-prompts-"));
-const previousOut = process.env.OUT_DIR;
 try {
-  process.env.OUT_DIR = promptDir;
-  const { getPending } = await import("./server/store");
+  const store = createStore({ outDir: promptDir, salt: "" });
   const promptFolder = openOutputFolder(promptDir, "");
   promptFolder.issueSeeds(1);
-  const withoutNegative = getPending("", false);
-  const withNegative = getPending("", true);
+  const withoutNegative = store.getPending(false);
+  const withNegative = store.getPending(true);
   results.push(check("API returns finished Prompt text, not parts for the browser",
     Object.keys(withNegative).join() === "items" &&
     withoutNegative.items[0].prompt === promptFolder.promptFor(1) &&
@@ -314,26 +317,25 @@ try {
   });
   results.push(check("free and API routes send the exact same Prompt", sent === withNegative.items[0].prompt));
 } finally {
-  if (previousOut === undefined) delete process.env.OUT_DIR;
-  else process.env.OUT_DIR = previousOut;
   rmSync(promptDir, { recursive: true, force: true });
 }
 
 // Ticket #7: the routes read through the module. Frames arrive as streams, every
 // failure arrives as a named code, and one table turns each code into a status.
+// The app is pointed at the temporary folder rather than the environment naming
+// it, so this block sets nothing up for a later one and restores nothing.
 const routeDir = mkdtempSync(join(tempBase, "portrait-routes-"));
-const savedOut = process.env.OUT_DIR;
+// GEMINI_API_KEY is the exception, and not about the dataset: the Job asks
+// whether one is set on every start and the status route reports it, and both
+// read the process. So it is still cleared here and put back afterwards.
 const savedKey = process.env.GEMINI_API_KEY;
 try {
-  process.env.OUT_DIR = routeDir;
   process.env.GEMINI_API_KEY = "";
-  const { createApp, STATUS_BY_CODE } = await import("./server/index");
-  const { refusalFor } = await import("./server/jobs");
   const codes = Object.keys(STATUS_BY_CODE) as import("./errors").ArchiveErrorCode[];
   const seeded = openOutputFolder(routeDir, "route-salt");
   seeded.issueSeeds(3); // Seeds 1 to 3 are waiting
   await seeded.importFrames([{ name: "one.png", buffer: await good() }], [1]);
-  const api = createApp("route-salt");
+  const api = createApp({ outDir: routeDir, salt: "route-salt" });
   // A route that raises each code with a message nobody would ever write, so the
   // status can only have come from the code.
   for (const code of codes)
@@ -394,7 +396,8 @@ try {
   results.push(check("an impossible Seed is refused with the invalid-Seed status",
     (await api.request("/api/images/0/file")).status === STATUS_BY_CODE["invalid-seed"]));
   results.push(check("a mismatched salt is refused with the salt-mismatch status",
-    (await createApp("wrong-salt").request("/api/prompts/pending")).status === STATUS_BY_CODE["salt-mismatch"]));
+    (await createApp({ outDir: routeDir, salt: "wrong-salt" })
+      .request("/api/prompts/pending")).status === STATUS_BY_CODE["salt-mismatch"]));
 
   const partial = await images(
     [{ name: "corrupt.png", buffer: Buffer.from("not an image") }, { name: "three.png", buffer: await good() }], [2, 3],
@@ -436,11 +439,75 @@ try {
   results.push(check("the Job refuses to start while one is running",
     busy?.status === 409 && busy.message === "A job is already running"));
 } finally {
-  if (savedOut === undefined) delete process.env.OUT_DIR;
-  else process.env.OUT_DIR = savedOut;
   if (savedKey === undefined) delete process.env.GEMINI_API_KEY;
   else process.env.GEMINI_API_KEY = savedKey;
   rmSync(routeDir, { recursive: true, force: true });
+}
+
+// Two apps in one process, each pointed at its own dataset. That is what the
+// injected pair buys: the routes never ask the environment where the folder is,
+// so no app can be answered out of another's Seed counter, Frames or Prompt
+// version. The Prompt files are read when a folder is opened and are named
+// relative to the working directory, so each app is built under its own — if the
+// archive were remembered per module instead of per app, the first app's second
+// request would reopen its folder under the second app's Prompt files and answer
+// with the wrong Prompt version.
+const pairBase = mkdtempSync(join(tempBase, "portrait-pair-"));
+const alphaDir = join(pairBase, "alpha-archive");
+const betaDir = join(pairBase, "beta-archive");
+for (const [dir, version, noun] of [
+  [join(pairBase, "alpha-prompt-files"), "alpha-v1", "Alpha"],
+  [join(pairBase, "beta-prompt-files"), "beta-v1", "Beta"],
+] as const) {
+  mkdirSync(dir);
+  writeFileSync(join(dir, "template.txt"), `# ${version}\n${noun} portrait of {age}.`);
+  writeFileSync(join(dir, "negative.txt"), `${noun} exclusions`);
+}
+const statusOf = async (api: ReturnType<typeof createApp>) =>
+  (await (await api.request("/api/status")).json()) as import("./shared/api-types").Status;
+const framesOf = async (api: ReturnType<typeof createApp>) =>
+  (await (await api.request("/api/images")).json()) as import("./shared/api-types").ImageItem[];
+try {
+  // Fixture setup asks the module directly; every assertion below is an HTTP
+  // response from an app.
+  process.chdir(join(pairBase, "alpha-prompt-files"));
+  const alpha = createApp({ outDir: alphaDir, salt: "alpha" });
+  const alphaFolder = openOutputFolder(alphaDir, "alpha");
+  alphaFolder.issueSeeds(2);
+  await alphaFolder.importFrames([{ name: "alpha.png", buffer: await good() }], [1]);
+  const alphaBefore = await statusOf(alpha);
+  results.push(check(
+    "an app pointed at a dataset answers for that dataset",
+    alphaBefore.version === "alpha-v1" && alphaBefore.next === 3 && alphaBefore.waiting === 1 &&
+    alphaBefore.done === 1 && alphaBefore.saltSet && alphaBefore.problem === undefined,
+  ));
+
+  // The second app gets a different root, a different Seed salt and different
+  // Prompt files. Nothing about the first app may move.
+  process.chdir(join(pairBase, "beta-prompt-files"));
+  const beta = createApp({ outDir: betaDir, salt: "" });
+  openOutputFolder(betaDir, "").issueSeeds(1); // Seed 1 waiting, no Frame
+  // The second app is asked first, on purpose: if the archive were one per
+  // process, answering the beta app would be what moved the alpha app, and the
+  // alpha status below would come back rebuilt under beta's Prompt files.
+  const betaStatus = await statusOf(beta);
+  const alphaAfter = await statusOf(alpha);
+  results.push(check(
+    "two apps keep their own Seed counter, Seed salt and Prompt version",
+    alphaAfter.version === "alpha-v1" && alphaAfter.next === 3 && alphaAfter.waiting === 1 &&
+    alphaAfter.done === 1 && alphaAfter.saltSet &&
+    betaStatus.version === "beta-v1" && betaStatus.next === 2 && betaStatus.waiting === 1 &&
+    betaStatus.done === 0 && !betaStatus.saltSet,
+  ));
+  const [alphaFrames, betaFrames] = await Promise.all([framesOf(alpha), framesOf(beta)]);
+  results.push(check(
+    "two apps do not see each other's Frames",
+    alphaFrames.length === 1 && alphaFrames[0].seed === 1 && alphaFrames[0].version === "alpha-v1" &&
+    betaFrames.length === 0,
+  ));
+} finally {
+  process.chdir(repoRoot);
+  rmSync(pairBase, { recursive: true, force: true });
 }
 
 for (const d of [out, out2, inDir, "out-smoke3"]) rmSync(d, { recursive: true, force: true });

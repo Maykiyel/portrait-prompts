@@ -9,8 +9,7 @@ import { ArchiveError, type ArchiveErrorCode } from "../errors";
 import { seedLabel } from "../output-folder";
 import { getJob, refusalFor, startJob } from "./jobs";
 import {
-  addPrompts, getPending, getStatus, importFiles, importRefusal, listImages, readFrame, readThumbnail, rejectFrame,
-  type FrameStream,
+  createStore, importRefusal, type Dataset, type FrameStream,
 } from "./store";
 
 /** The one table that turns a named code into a status. Nothing else chooses one. */
@@ -25,8 +24,15 @@ export const STATUS_BY_CODE: Record<ArchiveErrorCode, 400 | 404 | 409 | 500> = {
 
 const send = (c: Context, stream: FrameStream) => c.body(Readable.toWeb(stream) as ReadableStream);
 
-export function createApp(salt: string): Hono {
+/**
+ * An app serves exactly one dataset, handed to it rather than found: the root
+ * says which output folder, the salt says which run of Seeds is legitimate there.
+ * Nothing inside reads the environment, so every app in a process is its own
+ * dataset and a test can point one at a temporary directory.
+ */
+export function createApp(dataset: Dataset): Hono {
   const app = new Hono();
+  const store = createStore(dataset);
 
   app.onError((err, c) => {
     if (err instanceof ArchiveError) return c.json({ error: err.message }, STATUS_BY_CODE[err.code]);
@@ -35,29 +41,29 @@ export function createApp(salt: string): Hono {
   });
 
   const api = new Hono();
-  api.get("/status", (c) => c.json(getStatus(salt)));
-  api.get("/prompts/pending", (c) => c.json(getPending(salt, c.req.query("useNegative") === "1")));
+  api.get("/status", (c) => c.json(store.getStatus()));
+  api.get("/prompts/pending", (c) => c.json(store.getPending(c.req.query("useNegative") === "1")));
   api.post("/prompts/new", async (c) => {
     const { count, useNegative } = await c.req.json<{ count: number; useNegative?: boolean }>();
-    return c.json(addPrompts(salt, count, useNegative === true));
+    return c.json(store.addPrompts(count, useNegative === true));
   });
 
-  api.get("/images", (c) => c.json(listImages(salt)));
+  api.get("/images", (c) => c.json(store.listImages()));
   api.get("/images/:seed/thumb", async (c) => {
     const width = Math.min(Math.max(Number(c.req.query("w") ?? 320), 80), 768);
     c.header("Content-Type", "image/webp");
     c.header("Cache-Control", "no-cache");
-    return send(c, await readThumbnail(salt, Number(c.req.param("seed")), width));
+    return send(c, await store.readThumbnail(Number(c.req.param("seed")), width));
   });
   api.get("/images/:seed/file", (c) => {
     const seed = Number(c.req.param("seed"));
     c.header("Content-Type", "image/png");
     c.header("Cache-Control", "no-cache");
     if (c.req.query("download") === "1") c.header("Content-Disposition", `attachment; filename="${seedLabel(seed)}.png"`);
-    return send(c, readFrame(salt, seed, c.req.query("raw") === "1"));
+    return send(c, store.readFrame(seed, c.req.query("raw") === "1"));
   });
   api.post("/images/:seed/reject", (c) => {
-    rejectFrame(salt, Number(c.req.param("seed")));
+    store.rejectFrame(Number(c.req.param("seed")));
     return c.json({ ok: true });
   });
 
@@ -77,14 +83,14 @@ export function createApp(salt: string): Hono {
     }
     const refused = importRefusal(seeds);
     if (refused) return c.json({ error: refused.message }, refused.status);
-    return c.json({ results: await importFiles(salt, files, seeds) });
+    return c.json({ results: await store.importFiles(files, seeds) });
   });
 
   api.post("/generate", async (c) => {
     const req = await c.req.json<GenerateRequest>();
     const refused = refusalFor(getJob(), Boolean(process.env.GEMINI_API_KEY), req);
     if (refused) return c.json({ error: refused.message }, refused.status);
-    return c.json(startJob(req, salt));
+    return c.json(startJob(req, dataset));
   });
   api.get("/generate/job", (c) => c.json(getJob()));
 
@@ -92,8 +98,10 @@ export function createApp(salt: string): Hono {
   return app;
 }
 
-const salt = (process.env.SEED_SALT ?? "").trim();
-const app = createApp(salt);
+// The composition root: the one place the environment names a dataset. Both
+// values are read once here and handed to the app, as they always were.
+const dataset: Dataset = { outDir: process.env.OUT_DIR ?? "out", salt: (process.env.SEED_SALT ?? "").trim() };
+const app = createApp(dataset);
 
 // Built UI, when it exists. In development Vite serves the UI instead.
 const dist = "./web/dist";
