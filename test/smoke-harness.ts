@@ -3,7 +3,7 @@
 // shares. No behaviour lives here.
 import { readFileSync } from "node:fs";
 import sharp from "sharp";
-import { ArchiveError } from "./errors";
+import { ArchiveError } from "../core/errors";
 
 export const results: boolean[] = [];
 

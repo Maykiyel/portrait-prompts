@@ -1,6 +1,6 @@
 import type { GenerateRequest, JobState } from "../shared/api-types";
-import { defaults, run } from "../generate";
-import { MODELS } from "../gemini";
+import { defaults, run } from "../cli/generate";
+import { MODELS } from "../core/gemini";
 import type { Dataset } from "./store";
 
 const fresh = (): JobState => ({ status: "idle", total: 0, done: 0, failed: 0, log: [] });

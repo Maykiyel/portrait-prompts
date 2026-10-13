@@ -1,6 +1,6 @@
 import "dotenv/config";
-import { geminiGenerator, MODELS, type Generator } from "./gemini";
-import { namedSeeds, openOutputFolder } from "./output-folder";
+import { geminiGenerator, MODELS, type Generator } from "../core/gemini";
+import { namedSeeds, openOutputFolder } from "../core/output-folder";
 
 export type RunOptions = {
   /** Leave undefined to continue from the seed counter. */

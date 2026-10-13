@@ -7,9 +7,9 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import sharp from "sharp";
-import { defaults, run } from "./generate";
-import { importImages } from "./import-images";
-import { openOutputFolder } from "./output-folder";
+import { defaults, run } from "../cli/generate";
+import { importImages } from "../cli/import-images";
+import { openOutputFolder } from "../core/output-folder";
 import { asyncCode, bad, check, good, promptFiles, repoRoot, results, streamBytes } from "./smoke-harness";
 
 export async function runCliContract(): Promise<void> {
@@ -52,7 +52,7 @@ export async function runCliContract(): Promise<void> {
   cliFolder.recordAttempt({ seed: 3, status: "failed", error: "fixture failure" });
 
   // status: the same lines, and the same failed count as the module.
-  const statusOut = await spawnCli("status.ts", [cliOut]);
+  const statusOut = await spawnCli("cli/status.ts", [cliOut]);
   results.push(check(
     "the status command prints the same lines it printed before the migration",
     statusOut.code === 0 && statusOut.output === [
@@ -73,7 +73,7 @@ export async function runCliContract(): Promise<void> {
   // prompts: the same line, and a file whose bytes are unchanged.
   const promptsFile = "out-smoke7-prompts.html";
   rmSync(promptsFile, { force: true });
-  const promptsRun = await spawnCli("export-prompts.ts", [
+  const promptsRun = await spawnCli("cli/export-prompts.ts", [
     "--dir", cliOut, "--count", "2", "--out", promptsFile, "--no-negative",
   ]);
   const promptsHtml = readFileSync(promptsFile, "utf8");
@@ -208,7 +208,7 @@ export async function runCliContract(): Promise<void> {
   const saltDir = "out-smoke12";
   rmSync(saltDir, { recursive: true, force: true });
   openOutputFolder(saltDir, "the-salt-it-started-with").claimSeeds(1);
-  const mismatched = await spawnCli("status.ts", [saltDir], { SEED_SALT: "a-different-salt" });
+  const mismatched = await spawnCli("cli/status.ts", [saltDir], { SEED_SALT: "a-different-salt" });
   results.push(check(
     "a salt mismatch makes status print the problem and exit 0",
     mismatched.code === 0 && mismatched.error.includes("SEED_SALT does not match"),
@@ -219,7 +219,7 @@ export async function runCliContract(): Promise<void> {
   writeFileSync(join(cliOut, "cursor.json"), "{ corrupt");
   results.push(check(
     "the status command still refuses an unreadable counter",
-    (await spawnCli("status.ts", [cliOut])).code === 1,
+    (await spawnCli("cli/status.ts", [cliOut])).code === 1,
   ));
   results.push(check(
     "the run still refuses an unreadable counter instead of starting again",

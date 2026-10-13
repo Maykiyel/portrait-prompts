@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { openOutputFolder, seedLabel } from "./output-folder";
+import { openOutputFolder, seedLabel } from "../core/output-folder";
 
 const outDir = process.argv.slice(2).filter((a) => a !== "--")[0] ?? "out";
 const folder = openOutputFolder(outDir, (process.env.SEED_SALT ?? "").trim());

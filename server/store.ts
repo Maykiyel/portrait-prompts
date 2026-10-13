@@ -1,4 +1,4 @@
-import { openOutputFolder, type OutputFolder } from "../output-folder";
+import { openOutputFolder, type OutputFolder } from "../core/output-folder";
 import type { ImageItem, ImportResult, PromptsResponse, Status } from "../shared/api-types";
 
 /**

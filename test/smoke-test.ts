@@ -8,14 +8,14 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
-import { ArchiveError } from "./errors";
-import { defaults, run } from "./generate";
-import { importImages } from "./import-images";
-import { openOutputFolder, seedLabel, type FileForImport } from "./output-folder";
-import { buildPrompt, pools } from "./sampler";
-import { createApp, STATUS_BY_CODE } from "./server/index";
-import { refusalFor } from "./server/jobs";
-import { createStore } from "./server/store";
+import { ArchiveError } from "../core/errors";
+import { defaults, run } from "../cli/generate";
+import { importImages } from "../cli/import-images";
+import { openOutputFolder, seedLabel, type FileForImport } from "../core/output-folder";
+import { buildPrompt, pools } from "../core/sampler";
+import { createApp, STATUS_BY_CODE } from "../server/index";
+import { refusalFor } from "../server/jobs";
+import { createStore } from "../server/store";
 import { runAudit } from "./smoke-audit";
 import { runCliContract } from "./smoke-cli";
 import {
@@ -35,7 +35,7 @@ runAudit();
 // filenames and the command line, and the browser states it for display,
 // because importing the module would drag the image library into the
 // bundle. Nothing may let the two drift apart.
-const { seedLabel: browserSeedLabel } = await import("./web/src/lib/text");
+const { seedLabel: browserSeedLabel } = await import("../web/src/lib/text");
 const labelSeeds = [1, 9, 10, 99, 100, 99999, 100000, 12345];
 results.push(check(
   "the module and the browser label the same Seeds identically",
@@ -152,7 +152,7 @@ const READER = `const { pathToFileURL } = require("node:url");
    process.stdout.write(JSON.stringify({ reads, broken }));
  })();`;
 const readers = [0, 1].map(() =>
-  execFile(process.execPath, ["--import", "tsx", "-e", READER, join(repoRoot, "output-folder.ts"), writerDir], {
+  execFile(process.execPath, ["--import", "tsx", "-e", READER, join(repoRoot, "core/output-folder.ts"), writerDir], {
     cwd: repoRoot,
   }),
 );
@@ -331,7 +331,7 @@ const routeDir = mkdtempSync(join(tempBase, "portrait-routes-"));
 const savedKey = process.env.GEMINI_API_KEY;
 try {
   process.env.GEMINI_API_KEY = "";
-  const codes = Object.keys(STATUS_BY_CODE) as import("./errors").ArchiveErrorCode[];
+  const codes = Object.keys(STATUS_BY_CODE) as import("../core/errors").ArchiveErrorCode[];
   const seeded = openOutputFolder(routeDir, "route-salt");
   seeded.issueSeeds(3); // Seeds 1 to 3 are waiting
   await seeded.importFrames([{ name: "one.png", buffer: await good() }], [1]);
@@ -349,7 +349,7 @@ try {
     form.append("seeds", JSON.stringify(seeds));
     return post("/api/import", form);
   };
-  const request: import("./shared/api-types").GenerateRequest = { count: 1, model: "flash", size: "1K", concurrency: 1, useNegative: false };
+  const request: import("../shared/api-types").GenerateRequest = { count: 1, model: "flash", size: "1K", concurrency: 1, useNegative: false };
 
   results.push(check("one table maps every ArchiveErrorCode to a status, and nothing keys on text",
     codes.length === 6 && codes.every((code) => typeof STATUS_BY_CODE[code] === "number")));
@@ -464,9 +464,9 @@ for (const [dir, version, noun] of [
   writeFileSync(join(dir, "negative.txt"), `${noun} exclusions`);
 }
 const statusOf = async (api: ReturnType<typeof createApp>) =>
-  (await (await api.request("/api/status")).json()) as import("./shared/api-types").Status;
+  (await (await api.request("/api/status")).json()) as import("../shared/api-types").Status;
 const framesOf = async (api: ReturnType<typeof createApp>) =>
-  (await (await api.request("/api/images")).json()) as import("./shared/api-types").ImageItem[];
+  (await (await api.request("/api/images")).json()) as import("../shared/api-types").ImageItem[];
 try {
   // Fixture setup asks the module directly; every assertion below is an HTTP
   // response from an app.
