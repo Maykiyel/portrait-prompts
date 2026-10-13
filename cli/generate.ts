@@ -3,8 +3,13 @@ import { geminiGenerator, MODELS } from "../core/gemini";
 import {
   run, type Generator, type ProgressEvent, type RunResult,
 } from "../core/generate";
+import { policy } from "../core/policy";
 
-/** What the command line was asked to do. `defaults` below is the policy. */
+/**
+ * What the command line was asked to do. Every generation value here is the
+ * core's default until a flag says otherwise; see `core/policy.ts`, which the
+ * Job reads too.
+ */
 export type CliOptions = {
   /** Leave undefined to continue from the seed counter. */
   start?: number;
@@ -18,17 +23,6 @@ export type CliOptions = {
   dryRun: boolean;
   /** Handed in by whoever started the run, never read from the environment here. */
   salt: string;
-};
-
-export const defaults: Omit<CliOptions, "salt"> = {
-  count: 10,
-  concurrency: 3,
-  model: MODELS.flash,
-  aspectRatio: "2:3",
-  imageSize: "1K",
-  outDir: "out",
-  useNegative: true,
-  dryRun: false,
 };
 
 /**
@@ -68,8 +62,23 @@ export async function generateImages(options: CliOptions, generate: Generator): 
   return result;
 }
 
-function parseArgs(argv: string[]): CliOptions {
-  const o: CliOptions = { ...defaults, salt: (process.env.SEED_SALT ?? "").trim() };
+/**
+ * argv in, the options the run is asked for. Exported so the no-flag start can
+ * be observed without spawning this file as a process, which is what proves
+ * the command line begins from the core's policy rather than from a copy of it.
+ *
+ * The policy supplies every generation value. The two that are not generation
+ * policy are the command line's own: where the dataset lives when nobody says,
+ * and whether to look before spending. Both are a flag away from being anything
+ * else, and neither is a default the Job would want.
+ */
+export function parseArgs(argv: string[]): CliOptions {
+  const o: CliOptions = {
+    ...policy,
+    outDir: "out",
+    dryRun: false,
+    salt: (process.env.SEED_SALT ?? "").trim(),
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const v = () => argv[++i];

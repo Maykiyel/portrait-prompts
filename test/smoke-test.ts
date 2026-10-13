@@ -10,12 +10,17 @@ import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { ArchiveError } from "../core/errors";
 import {
-  run, type Generator, type PromptEvent, type ProgressEvent, type RunRequest, type SeedEvent, type StartEvent,
+  run, type GenOptions, type Generator, type PromptEvent, type ProgressEvent, type RunRequest, type SeedEvent,
+  type StartEvent,
 } from "../core/generate";
+import { MODELS } from "../core/gemini";
+import { policy } from "../core/policy";
+import { generateImages, parseArgs } from "../cli/generate";
 import { importImages } from "../cli/import-images";
 import { openOutputFolder, seedLabel, type FileForImport } from "../core/output-folder";
 import { buildPrompt, pools } from "../core/sampler";
 import { createApp, STATUS_BY_CODE } from "../server/index";
+import type { GenerateRequest, JobState } from "../shared/api-types";
 import { refusalFor } from "../server/jobs";
 import { createStore } from "../server/store";
 import { runAudit } from "./smoke-audit";
@@ -49,12 +54,16 @@ results.push(check(
 // this section — the run is asked what it did, the folder answers everything
 // else, and one check at the end watches the console to hold it silent.
 const apiFolder = openOutputFolder(out, "");
+// This section drives the run directly, so it names its own concrete values:
+// one Seed at a time, one worker, and a model no vendor has. The two it does
+// not care about are the core's defaults rather than a second copy of them,
+// because nothing in this section asserts on either.
 const apiRequest = (over: Partial<RunRequest>, generate: Generator = good): RunRequest => ({
   count: 1,
   concurrency: 1,
   model: "fake-model",
-  aspectRatio: "2:3",
-  imageSize: "1K",
+  aspectRatio: policy.aspectRatio,
+  imageSize: policy.imageSize,
   useNegative: true,
   dryRun: false,
   outDir: out,
@@ -614,6 +623,152 @@ try {
   if (savedKey === undefined) delete process.env.GEMINI_API_KEY;
   else process.env.GEMINI_API_KEY = savedKey;
   rmSync(routeDir, { recursive: true, force: true });
+}
+
+// One policy, two adapters. Both are asked to do the same thing — the command
+// line with no flags at all, the Job from a request that repeats the policy —
+// and what the Generator was handed is compared value by value.
+//
+// Nothing here compares the two adapters' imported symbols. Two imports of one
+// object are the same object by construction, so that check would still pass
+// with only one adapter reading the policy, which is the failure it is here to
+// catch. What is compared is what each adapter's own path — argv, the wire
+// request, the run, the Generator — actually produced, because that is the
+// only place a second policy could come from.
+//
+// The values the Generator is handed, plus the two the policy fixes that it is
+// not handed: the Negative list shows up in the Prompt, and the pool size in
+// how many calls were in flight at once.
+const policySpy = () => {
+  const seen: { prompt: string; opts: GenOptions }[] = [];
+  const calls = { inFlight: 0, most: 0 };
+  const generate: Generator = async (prompt, opts) => {
+    seen.push({ prompt, opts });
+    calls.inFlight++;
+    calls.most = Math.max(calls.most, calls.inFlight);
+    // The pause is what makes the pool size observable at all: every worker
+    // reaches the Generator before any of them comes back, so the number of
+    // calls in flight is the number of workers rather than a race.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    calls.inFlight--;
+    return good();
+  };
+  return { seen, calls, generate };
+};
+const asRun = (spy: ReturnType<typeof policySpy>) => ({
+  ...spy.seen[0].opts,
+  negative: spy.seen[0].prompt.includes("\n\nAvoid:"),
+  pool: spy.calls.most,
+  seeds: spy.seen.length,
+});
+const genOptions: (keyof GenOptions)[] = ["model", "aspectRatio", "imageSize"];
+const policyBase = mkdtempSync(join(tempBase, "portrait-policy-"));
+writeFileSync(join(policyBase, "template.txt"), "# policy-v1\nPortrait of {age}.");
+writeFileSync(join(policyBase, "negative.txt"), "policy exclusions");
+const policySalt = process.env.SEED_SALT;
+const policyKey = process.env.GEMINI_API_KEY;
+try {
+  delete process.env.SEED_SALT;
+  process.env.GEMINI_API_KEY = "a-key-the-fake-Generator-never-uses";
+  // The Prompt files are read from the working directory, so the command line
+  // runs from a folder of its own: with no flags it writes to `out`, and this
+  // is its real no-flag path rather than a fixture standing in for one.
+  process.chdir(policyBase);
+
+  const cliSpy = policySpy();
+  const cliLines = await captureOutput(() => generateImages(parseArgs([]), cliSpy.generate));
+  const cliRun = asRun(cliSpy);
+
+  // The wire request names a model key rather than a vendor name, so it can
+  // only repeat the policy by looking the key up. And it carries no aspect
+  // ratio at all, which is what leaves that one value to the Job's policy.
+  const modelKey = (Object.keys(MODELS) as GenerateRequest["model"][]).find(
+    (key) => MODELS[key] === policy.model,
+  );
+  if (modelKey === undefined)
+    throw new Error(`the policy names a model a request cannot ask for: ${policy.model}`);
+  const repeating: GenerateRequest = {
+    count: policy.count,
+    model: modelKey,
+    size: policy.imageSize as GenerateRequest["size"],
+    concurrency: policy.concurrency,
+    useNegative: policy.useNegative,
+  };
+  const jobSpy = policySpy();
+  const jobApp = createApp({ outDir: join(policyBase, "job-archive"), salt: "" }, jobSpy.generate);
+  // The route answers at once and the run is not awaited, so the Job is polled
+  // the way the browser polls it until it leaves running.
+  const settle = async (app: ReturnType<typeof createApp>) => {
+    for (let attempt = 0; attempt < 750; attempt++) {
+      const state = (await (await app.request("/api/generate/job")).json()) as JobState;
+      if (state.status !== "running") return state;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return (await (await app.request("/api/generate/job")).json()) as JobState;
+  };
+  await jobApp.request("/api/generate", { method: "POST", body: JSON.stringify(repeating) });
+  const jobState = await settle(jobApp);
+  const jobRun = asRun(jobSpy);
+
+  results.push(check(
+    "the two adapters start from one policy: what the Generator was told is the same either way",
+    // Both runs were told the same thing, and it was the policy. If either
+    // adapter carried one of its own, the first clause is where they part.
+    genOptions.every((k) => cliRun[k] === jobRun[k] && cliRun[k] === policy[k]) &&
+      cliRun.negative === jobRun.negative && cliRun.negative === policy.useNegative &&
+      cliRun.pool === jobRun.pool && cliRun.pool === policy.concurrency &&
+      cliRun.seeds === jobRun.seeds && cliRun.seeds === policy.count &&
+      // The command line's own line says which model and how many Seeds it ran,
+      // and the Job's own state says the same, so both are checked where their
+      // callers see them and not only where the vendor is told.
+      cliLines[0].includes(`| ${policy.model} | ${policy.count} to generate, `) &&
+      jobState.status === "done" && jobState.total === policy.count && jobState.done === policy.count &&
+      jobState.model === policy.model,
+  ));
+
+  const allFlags = parseArgs([
+    "--start", "5", "--count", "3", "--concurrency", "7", "--model", "lite", "--aspect", "3:4",
+    "--size", "2K", "--out", "somewhere-else", "--no-negative", "--dry-run",
+  ]);
+  const oneFlag = parseArgs(["--count", "3"]);
+  results.push(check(
+    "each command-line flag overrides the one value it names and leaves the rest on the policy",
+    allFlags.start === 5 && allFlags.count === 3 && allFlags.concurrency === 7 &&
+      allFlags.model === MODELS.lite && allFlags.aspectRatio === "3:4" && allFlags.imageSize === "2K" &&
+      allFlags.outDir === "somewhere-else" && allFlags.useNegative === false && allFlags.dryRun === true &&
+      // One flag on its own, which is the case that matters: everything it does
+      // not name is still the policy's, because the command line starts from
+      // the policy rather than from a copy of it. The two values it does own
+      // are its own — where the dataset lives, and whether to look before
+      // spending — and neither is generation policy.
+      genOptions.every((k) => oneFlag[k] === policy[k]) && oneFlag.count === 3 &&
+      oneFlag.outDir === "out" && oneFlag.dryRun === false && oneFlag.start === undefined,
+  ));
+
+  const overSpy = policySpy();
+  const overApp = createApp({ outDir: join(policyBase, "override-archive"), salt: "" }, overSpy.generate);
+  await overApp.request("/api/generate", {
+    method: "POST",
+    body: JSON.stringify({ count: 2, model: "pro", size: "2K", concurrency: 1, useNegative: false }),
+  });
+  const overState = await settle(overApp);
+  results.push(check(
+    "the Job lets the request override what it names and takes the policy for what it cannot",
+    overState.status === "done" && overState.total === 2 && overState.model === MODELS.pro &&
+      overSpy.seen.length === 2 && overSpy.calls.most === 1 &&
+      overSpy.seen[0].opts.model === MODELS.pro && overSpy.seen[0].opts.imageSize === "2K" &&
+      !overSpy.seen[0].prompt.includes("\n\nAvoid:") &&
+      // The aspect ratio is the one value a request has no way to name, so it
+      // is the one value here that can only have come from the policy.
+      overSpy.seen[0].opts.aspectRatio === policy.aspectRatio,
+  ));
+} finally {
+  process.chdir(repoRoot);
+  if (policySalt === undefined) delete process.env.SEED_SALT;
+  else process.env.SEED_SALT = policySalt;
+  if (policyKey === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = policyKey;
+  rmSync(policyBase, { recursive: true, force: true });
 }
 
 // Two apps in one process, each pointed at its own dataset. That is what the
