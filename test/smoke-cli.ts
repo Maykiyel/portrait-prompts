@@ -10,9 +10,10 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import sharp from "sharp";
-import { defaults, generateImages } from "../cli/generate";
+import { generateImages } from "../cli/generate";
 import { importImages } from "../cli/import-images";
 import { openOutputFolder } from "../core/output-folder";
+import { policy } from "../core/policy";
 import { asyncCode, bad, captureOutput, check, good, promptFiles, repoRoot, results, streamBytes } from "./smoke-harness";
 
 export async function runCliContract(): Promise<void> {
@@ -149,16 +150,19 @@ export async function runCliContract(): Promise<void> {
   ));
 
   // The run: the same lines, Waiting Seeds finished first, failed Seeds left waiting.
+  // The model in the header is now the core's policy rather than a copy beside
+  // the command line, so this still compares against the model the bytes were
+  // first captured with, and still fails if either moves away from it.
   const runOut = "out-smoke11";
   rmSync(runOut, { recursive: true, force: true });
   // One worker, so the order of these lines is fixed rather than a race.
   const failLines = await captureOutput(() =>
-    generateImages({ ...defaults, count: 3, concurrency: 1, outDir: runOut, salt: "" }, bad));
+    generateImages({ ...policy, count: 3, concurrency: 1, outDir: runOut, dryRun: false, salt: "" }, bad));
   const runFolder = openOutputFolder(runOut, "");
   results.push(check(
     "a failing run prints the same lines and leaves every Seed waiting",
     failLines.join("\n") === [
-      `${cliVersion} | ${defaults.model} | 3 to generate, 0 already done | seeds 1 to 3`,
+      `${cliVersion} | ${policy.model} | 3 to generate, 0 already done | seeds 1 to 3`,
       "[1] failed: fake quota error",
       "[2] failed: fake quota error",
       "[3] failed: fake quota error",
@@ -170,11 +174,11 @@ export async function runCliContract(): Promise<void> {
   ));
   // One worker, so the order of these lines is fixed rather than a race.
   const retryLines = await captureOutput(() =>
-    generateImages({ ...defaults, count: 2, concurrency: 1, outDir: runOut, salt: "" }, good));
+    generateImages({ ...policy, count: 2, concurrency: 1, outDir: runOut, dryRun: false, salt: "" }, good));
   results.push(check(
     "the next run finishes Waiting Seeds first and does not advance the counter",
     retryLines.join("\n") === [
-      `${cliVersion} | ${defaults.model} | 2 to generate, 0 already done | seeds 1 to 2`,
+      `${cliVersion} | ${policy.model} | 2 to generate, 0 already done | seeds 1 to 2`,
       "[1] ok (1/2)",
       "[2] ok (2/2)",
       `\nDone. 2 ok, 0 failed. Output in ${runOut}/`,
@@ -183,7 +187,7 @@ export async function runCliContract(): Promise<void> {
       runFolder.status().done === 2 && runFolder.status().failed === 1,
   ));
   const dryRunLines = await captureOutput(() =>
-    generateImages({ ...defaults, count: 2, outDir: runOut, dryRun: true, salt: "" }, good),
+    generateImages({ ...policy, count: 2, outDir: runOut, dryRun: true, salt: "" }, good),
   );
   results.push(check(
     "a dry run prints the Prompt, moves no counter and writes no Frame",
@@ -247,7 +251,7 @@ export async function runCliContract(): Promise<void> {
   results.push(check(
     "the run still refuses an unreadable counter instead of starting again",
     await asyncCode(() =>
-      generateImages({ ...defaults, count: 1, outDir: cliOut, dryRun: true, salt: "" }, good)) ===
+      generateImages({ ...policy, count: 1, outDir: cliOut, dryRun: true, salt: "" }, good)) ===
       "unreadable-counter",
   ));
 

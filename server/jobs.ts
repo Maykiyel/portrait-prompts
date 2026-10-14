@@ -1,7 +1,7 @@
 import type { GenerateRequest, JobState } from "../shared/api-types";
-import { defaults } from "../cli/generate";
 import { MODELS } from "../core/gemini";
 import { run, type Generator } from "../core/generate";
+import { policy } from "../core/policy";
 import type { Dataset } from "./store";
 
 const fresh = (): JobState => ({ status: "idle", total: 0, done: 0, failed: 0, log: [] });
@@ -29,6 +29,14 @@ export function refusalFor(current: JobState, hasApiKey: boolean, req: GenerateR
  * pointed-at folder rather than reaching for the environment to find one, and
  * it is handed the thing that makes images rather than naming a vendor itself.
  *
+ * It starts from the core's generation policy and lets the request override
+ * what the request names, the same way the command line starts from it and lets
+ * its flags override. Neither declares its own, so the terminal and the browser
+ * cannot drift apart on the model or the concurrency. Two of the Job's own
+ * decisions stay here because they are Job rules rather than policy: the
+ * concurrency is clamped to what the server will run at once, and the lite
+ * model gets 1K because that is the only size it supports.
+ *
  * It translates, and that is all it does. The total comes from the run's start
  * event, the counts and the log come from the per-Seed events, and none of it
  * arrives as text: the browser's progress bar and log are built from these
@@ -40,7 +48,7 @@ export function startJob(req: GenerateRequest, { outDir, salt }: Dataset, genera
 
   job = { ...fresh(), status: "running", model, startedAt: new Date().toISOString() };
   run({
-    ...defaults,
+    ...policy,
     count: req.count,
     model,
     imageSize: size,
