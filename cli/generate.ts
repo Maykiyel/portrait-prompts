@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { geminiGenerator, MODELS } from "../core/gemini";
 import {
-  run, type Generator, type ProgressEvent, type RunResult,
+  run, type Generator, type ProgressEvent, type RunRequest, type RunResult,
 } from "../core/generate";
 import { policy } from "../core/policy";
 
@@ -9,21 +9,26 @@ import { policy } from "../core/policy";
  * What the command line was asked to do. Every generation value here is the
  * core's default until a flag says otherwise; see `core/policy.ts`, which the
  * Job reads too.
+ *
+ * It is `Pick<RunRequest, ...>` for the same reason the policy is. The run's own
+ * shape, so a field the run does not take cannot be declared here without the
+ * typecheck turning red. The hand-written list of ten fields this replaces was
+ * passed straight into `run()` by a spread, and TypeScript checks a spread for
+ * what is missing but never for what is left over — so a field the run had
+ * renamed away was quietly ignored rather than refused, and a field it had
+ * retyped was refused for a reason pointing somewhere else.
+ *
+ * `generate` and `onEvent` are the adapter's own and are left out: the Generator
+ * is handed in by whoever called this, and the renderer is this module. What
+ * remains is the generation policy plus the command line's own four — where the
+ * dataset lives when nobody says, whether to look before spending, the Seed salt
+ * and the starting Seed.
  */
-export type CliOptions = {
-  /** Leave undefined to continue from the seed counter. */
-  start?: number;
-  count: number;
-  concurrency: number;
-  model: string;
-  aspectRatio: string;
-  imageSize: string;
-  outDir: string;
-  useNegative: boolean;
-  dryRun: boolean;
-  /** Handed in by whoever started the run, never read from the environment here. */
-  salt: string;
-};
+export type CliOptions = Pick<
+  RunRequest,
+  | "start" | "count" | "concurrency" | "model" | "aspectRatio" | "imageSize"
+  | "outDir" | "useNegative" | "dryRun" | "salt"
+>;
 
 /**
  * The adapter: it renders what the run reports and sets the exit code, and it
@@ -34,6 +39,11 @@ export async function generateImages(options: CliOptions, generate: Generator): 
   // The command line shows how many Frames have landed so far, which is a
   // rendering decision: the run reports which Seeds succeeded and in what
   // order, and the adapter counts them, so `ok (1/2)` exists nowhere in the core.
+  // One branch per kind of event, the same dispatch the Job's own makes: `kind`
+  // is what says which event this is, never the presence or absence of a field.
+  // Anything that was not a start or a prompt used to fall through to the last
+  // branch and be announced as a failed Seed, so a kind added later would have
+  // been reported as a failure without anyone having decided it was one.
   let landed = 0;
   let total = 0;
   const render = (event: ProgressEvent) => {
@@ -45,11 +55,13 @@ export async function generateImages(options: CliOptions, generate: Generator): 
       );
     } else if (event.kind === "prompt") {
       console.log(`\n[${event.seed}] ${event.prompt}`);
-    } else if (event.ok) {
-      landed++;
-      console.log(`[${event.seed}] ok (${landed}/${total})`);
-    } else {
-      console.error(`[${event.seed}] failed: ${event.message}`);
+    } else if (event.kind === "seed") {
+      if (event.ok) {
+        landed++;
+        console.log(`[${event.seed}] ok (${landed}/${total})`);
+      } else {
+        console.error(`[${event.seed}] failed: ${event.message}`);
+      }
     }
   };
 

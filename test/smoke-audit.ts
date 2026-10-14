@@ -5,9 +5,58 @@
 // instead, and it is here to keep the ownership claim global. Anything
 // that can name one of the archive's private names, or pick up a
 // filesystem without a reason on record, fails the run.
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { check, repoRoot, results } from "./smoke-harness";
+
+/**
+ * The files the probes below plant, and the one way they come back out.
+ *
+ * A probe has to put a file in the tree for the audit to have something to find,
+ * and that file must not be there afterwards: the audit reads every source file
+ * in the repo, so a planted one that survived would be audited as though it were
+ * ours — and would turn the *next* run red, for a reason that has nothing to do
+ * with whatever change is being tested.
+ *
+ * Every plant is recorded the moment it is written rather than in the cleanup
+ * that follows, so the cleanup has something to find however far the run got.
+ * A `finally` covers a probe whose reading throws and a run that reaches the
+ * end; it does not cover Ctrl-C or a closed console, so the same list is emptied
+ * on the way out too.
+ */
+const planted: string[] = [];
+
+/** Writes a probe file, recording it and any folder it had to bring into being. */
+const plant = (...files: { path: string; contents: string }[]) => {
+  for (const { path, contents } of files) {
+    const folder = dirname(path);
+    if (!existsSync(folder)) {
+      mkdirSync(folder, { recursive: true });
+      planted.push(folder);
+    }
+    writeFileSync(path, contents);
+    planted.push(path);
+  }
+};
+
+/** Takes out everything `plant` put in, newest first so folders outlive nothing. */
+const clearPlanted = () => {
+  for (const path of planted.splice(0).reverse()) rmSync(path, { recursive: true, force: true });
+};
+
+process.on("exit", clearPlanted);
+process.on("SIGINT", () => { clearPlanted(); process.exit(130); });
+process.on("SIGTERM", () => { clearPlanted(); process.exit(143); });
+
+/** Plants, reads the tree, and takes the plants out again — whatever happens in between. */
+const whilePlanted = <T>(files: { path: string; contents: string }[], read: () => T): T => {
+  try {
+    plant(...files);
+    return read();
+  } finally {
+    clearPlanted();
+  }
+};
 
 export function runAudit(): void {
   const notSource = (name: string) =>
@@ -46,6 +95,11 @@ export function runAudit(): void {
     return path !== OWNER && !HARNESS.has(path);
   });
   const sourceText = new Map(audited.map((f) => [repoPath(f), readFileSync(f, "utf8")] as const));
+  // Every source file in the tree, read. Four probes below want exactly this and
+  // differ only in what they plant first, so it is written once.
+  const readAll = () => new Map(sourceFiles().map((f) => [repoPath(f), readFileSync(f, "utf8")] as const));
+  /** What two of the probes plant: a file whose only sin is reaching for a filesystem. */
+  const FS_IMPORT = 'import { readFileSync } from "node:fs";\n';
 
   // The only files allowed to reach for a filesystem, each for a folder the module
   // does not own. A fourth one has to be added here on purpose, with a reason.
@@ -91,20 +145,14 @@ export function runAudit(): void {
   // The audit must not be vacuous: a .js file, and a source directory
   // whose name merely starts with "out", are still source. A filesystem
   // import in either one turns the run red.
-  const probedSources = () => {
-    const scratch = join(repoRoot, "outbound");
-    const reach = join(repoRoot, "reach-around.js");
-    try {
-      mkdirSync(scratch, { recursive: true });
-      writeFileSync(join(scratch, "reach-around.ts"), 'import { readFileSync } from "node:fs";\n');
-      writeFileSync(reach, 'import { readFileSync } from "node:fs";\n');
-      return new Map(sourceFiles().map((f) => [repoPath(f), readFileSync(f, "utf8")] as const));
-    } finally {
-      // The scratch never outlives the probe, even if reading it throws.
-      rmSync(scratch, { recursive: true, force: true });
-      rmSync(reach, { force: true });
-    }
-  };
+  const probedSources = () =>
+    whilePlanted(
+      [
+        { path: join(repoRoot, "outbound", "reach-around.ts"), contents: FS_IMPORT },
+        { path: join(repoRoot, "reach-around.js"), contents: FS_IMPORT },
+      ],
+      readAll,
+    );
   const probed = audit(probedSources());
   results.push(check(
     "the audit is not vacuous: a .js file with a filesystem import turns it red",
@@ -118,18 +166,13 @@ export function runAudit(): void {
   // The core list is derived from the folder, so it has to hold for a file that
   // was never written into a list here: a core file naming the HTTP contract
   // types is refused by where it lives, not by its name.
-  const plantedTypes = join(repoRoot, "core", "reach-around-types.ts");
-  const probedCore = () => {
-    try {
-      writeFileSync(plantedTypes, 'import type { Status } from "../shared/api-types";\nvoid (0 as Status);\n');
-      return new Map(sourceFiles().map((f) => [repoPath(f), readFileSync(f, "utf8")] as const));
-    } finally {
-      rmSync(plantedTypes, { force: true });
-    }
-  };
   results.push(check(
     "the audit is not vacuous: a file added to core/ later is held to the core rules without a list edit",
-    audit(probedCore()).some((line) => line.startsWith("core/reach-around-types.ts names the HTTP contract types")),
+    audit(whilePlanted(
+      [{ path: join(repoRoot, "core", "reach-around-types.ts"),
+        contents: 'import type { Status } from "../shared/api-types";\nvoid (0 as Status);\n' }],
+      readAll,
+    )).some((line) => line.startsWith("core/reach-around-types.ts names the HTTP contract types")),
   ));
 
   // The command-line entry points reach the output folder through the core rather
@@ -193,15 +236,7 @@ export function runAudit(): void {
   const PLANTED = 'import { openOutputFolder } from "../core/output-folder";\n' +
     'import { outDir } from "../server/store";\n' +
     'export const openOwnFolder = () => openOutputFolder(outDir(), "");\n';
-  const probedEntry = () => {
-    try {
-      writeFileSync(plantedEntry, PLANTED);
-      return new Map(sourceFiles().map((f) => [repoPath(f), readFileSync(f, "utf8")] as const));
-    } finally {
-      rmSync(plantedEntry, { force: true });
-    }
-  };
-  const withEntry = probedEntry();
+  const withEntry = whilePlanted([{ path: plantedEntry, contents: PLANTED }], readAll);
   results.push(check(
     "the entry-point check is not vacuous: a file the old substring test accepted still fails it",
     PLANTED.includes("openOutputFolder(") &&
@@ -231,14 +266,10 @@ export function runAudit(): void {
   // turns it red, and the file never outlives the probe.
   const plantedServer = join(repoRoot, "server", "reach-around-cli.ts");
   const PLANTED_SERVER = 'import { generateImages } from "../cli/generate";\nvoid generateImages;\n';
-  const withServer = (() => {
-    try {
-      writeFileSync(plantedServer, PLANTED_SERVER);
-      return new Map(sourceFiles().map((f) => [repoPath(f), readFileSync(f, "utf8")] as const));
-    } finally {
-      rmSync(plantedServer, { force: true });
-    }
-  })();
+  const withServer = whilePlanted(
+    [{ path: plantedServer, contents: PLANTED_SERVER }],
+    readAll,
+  );
   results.push(check(
     "the server-does-not-import-the-command-line check is not vacuous: a server module that does turns it red",
     withServer.has(repoPath(plantedServer)) &&

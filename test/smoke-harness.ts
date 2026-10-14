@@ -4,6 +4,8 @@
 import { readFileSync } from "node:fs";
 import sharp from "sharp";
 import { ArchiveError } from "../core/errors";
+import type { createApp } from "../server/index";
+import type { JobState } from "../shared/api-types";
 
 export const results: boolean[] = [];
 
@@ -66,6 +68,32 @@ export const asyncCode = async (action: () => Promise<unknown>) => {
 };
 
 export const repoRoot = process.cwd();
+
+/**
+ * The Job one app is holding, and the wait for it to stop holding one.
+ *
+ * The route that starts a Job answers at once and does not await the run, so the
+ * only way to see a finished Job is the way a browser sees one: ask the polling
+ * route, and ask it again until the Job has left running. Both take the app
+ * rather than a reader of one route, because each app holds its own Job —
+ * settling one by watching another's route would be waiting for a state that
+ * app is never going to reach.
+ *
+ * The bounds are what they have always been: fifteen seconds' worth of asking
+ * at twenty milliseconds, and then the last state seen, which is a Job that is
+ * still running and says so rather than a check that quietly gives up.
+ */
+export const jobOf = async (app: ReturnType<typeof createApp>): Promise<JobState> =>
+  (await (await app.request("/api/generate/job")).json()) as JobState;
+
+export const settleJob = async (app: ReturnType<typeof createApp>): Promise<JobState> => {
+  for (let attempt = 0; attempt < 750; attempt++) {
+    const state = await jobOf(app);
+    if (state.status !== "running") return state;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return jobOf(app);
+};
 
 /** The Prompt files, read relative to the working directory. */
 export const promptFiles = () => {
