@@ -10,11 +10,11 @@
     "start": "tsx server/index.ts",
     "lint": "oxlint",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
-    "smoke": "tsx smoke-test.ts",
-    "generate": "tsx generate.ts",
-    "prompts": "tsx export-prompts.ts",
-    "import-images": "tsx import-images.ts",
-    "status": "tsx status.ts"
+    "smoke": "tsx test/smoke-test.ts",
+    "generate": "tsx cli/generate.ts",
+    "prompts": "tsx cli/export-prompts.ts",
+    "import-images": "tsx cli/import-images.ts",
+    "status": "tsx cli/status.ts"
   },
   "devDependencies": {
     "@babel/core": "^8.0.6",

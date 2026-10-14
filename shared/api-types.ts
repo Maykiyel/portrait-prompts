@@ -3,7 +3,7 @@
 // rather than restated; nothing in the core imports anything from this file, and
 // these are type-only imports, so the browser never pulls the module in and with
 // it the image library.
-import type { FrameRecord, ImportedFrame, PromptItem } from "../output-folder";
+import type { FrameRecord, ImportedFrame, PromptItem } from "../core/output-folder";
 
 export type ImageItem = FrameRecord;
 export type ImportResult = ImportedFrame;

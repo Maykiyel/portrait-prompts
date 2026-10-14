@@ -2,7 +2,7 @@ import "dotenv/config";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
 import sharp from "sharp";
-import { namedSeeds, openOutputFolder, seedLabel } from "./output-folder";
+import { namedSeeds, openOutputFolder, seedLabel } from "../core/output-folder";
 
 export type ImportOptions = {
   inDir: string;

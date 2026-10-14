@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
-import { openOutputFolder, seedLabel } from "./output-folder";
+import { openOutputFolder, seedLabel } from "../core/output-folder";
 
 function arg(name: string, fallback: string) {
   const i = process.argv.indexOf(name);

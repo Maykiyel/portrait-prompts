@@ -79,8 +79,15 @@ _Avoid_: negative prompt, exclusions
 
 ### Runs
 
+A Job and a generation run are two different things, and the code depends on the difference in more than one place. A generation run does the work; a Job is what one app holds while it does, and the command line is a third thing again that drives the same run and then walks away.
+
+**Generation run**:
+One pass of `core/generate.ts` over some Seeds: claim them, generate their Frames, record the Attempts, report what happened. It names no image vendor and writes to no terminal, so what it reports is decided by whoever asked for it. It keeps nothing between passes — the Manifest already records every Attempt.
+_Avoid_: batch, job, execution
+
 **Job**:
 One batch of images generated through the API. Seeds it fails stay waiting and run first next time.
+What one app holds over such a generation run: one at a time per app, refused without an API key, and forgotten on a restart, because the Manifest is what survives. The command line drives the same run and renders it to a terminal with an exit code, where the Job keeps the totals and the per-Seed log the browser polls. Neither has a dry run of its own — only the command line offers one, because looking at the work before paying for it is something a person does, and there is nobody at a terminal to do it for a Job.
 _Avoid_: task, run, batch, session
 
 **Free route**:

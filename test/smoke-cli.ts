@@ -2,45 +2,43 @@
 // reason: the four entry points' own output, byte for byte. These checks
 // compare each command's own output with what it printed before the
 // migration, and cross-check it against what the module says about the folder.
+// The generate checks wrap the command line's adapter, not the run underneath
+// it: the contract being defended is still what a person sees on a terminal,
+// and the run has no terminal left to be seen on.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import sharp from "sharp";
-import { defaults, run } from "./generate";
-import { importImages } from "./import-images";
-import { openOutputFolder } from "./output-folder";
-import { asyncCode, bad, check, good, promptFiles, repoRoot, results, streamBytes } from "./smoke-harness";
+import { generateImages } from "../cli/generate";
+import { importImages } from "../cli/import-images";
+import { openOutputFolder } from "../core/output-folder";
+import { policy } from "../core/policy";
+import { asyncCode, bad, captureOutput, check, good, promptFiles, repoRoot, results, streamBytes } from "./smoke-harness";
 
 export async function runCliContract(): Promise<void> {
   const cliVersion = promptFiles().version;
-  const captureCli = async (action: () => Promise<unknown> | unknown) => {
-    const captured: string[] = [];
-    const log = console.log;
-    const err = console.error;
-    console.log = (...a: unknown[]) => { captured.push(a.map(String).join(" ")); };
-    console.error = (...a: unknown[]) => { captured.push(a.map(String).join(" ")); };
-    try {
-      await action();
-    } finally {
-      console.log = log;
-      console.error = err;
-    }
-    return captured;
-  };
   // A command run as a real process, so its argv parsing and exit code are exercised.
-  const spawnCli = (script: string, args: string[], env: Record<string, string> = {}) =>
+  // `preloads` are loaded into the child ahead of the command itself, which is how
+  // the tripwire in `test/no-network.ts` gets in without the command knowing.
+  const spawnCli = (
+    script: string, args: string[], env: Record<string, string> = {}, preloads: string[] = [],
+  ) =>
     new Promise<{ code: number; output: string; error: string }>((resolve) => {
       let text = "";
       let errText = "";
-      const child = execFile(process.execPath, ["--import", "tsx", script, ...args], {
-        cwd: repoRoot,
-        env: { ...process.env, SEED_SALT: "", GEMINI_API_KEY: "", ...env },
-      });
+      const child = execFile(
+        process.execPath,
+        ["--import", "tsx", ...preloads.flatMap((p) => ["--import", p]), script, ...args],
+        { cwd: repoRoot, env: { ...process.env, SEED_SALT: "", GEMINI_API_KEY: "", ...env } },
+      );
       child.stdout?.on("data", (c: Buffer) => (text += c.toString()));
       child.stderr?.on("data", (c: Buffer) => (errText += c.toString()));
       child.on("close", (code) => resolve({ code: code ?? 0, output: text, error: errText }));
     });
+  // A file:// URL, because `--import` will not take a bare Windows path.
+  const noNetwork = pathToFileURL(join(repoRoot, "test", "no-network.ts")).href;
 
   // A fixture archive: two Frames, one failed Attempt, four Waiting Seeds.
   const cliOut = "out-smoke7";
@@ -52,7 +50,7 @@ export async function runCliContract(): Promise<void> {
   cliFolder.recordAttempt({ seed: 3, status: "failed", error: "fixture failure" });
 
   // status: the same lines, and the same failed count as the module.
-  const statusOut = await spawnCli("status.ts", [cliOut]);
+  const statusOut = await spawnCli("cli/status.ts", [cliOut]);
   results.push(check(
     "the status command prints the same lines it printed before the migration",
     statusOut.code === 0 && statusOut.output === [
@@ -73,7 +71,7 @@ export async function runCliContract(): Promise<void> {
   // prompts: the same line, and a file whose bytes are unchanged.
   const promptsFile = "out-smoke7-prompts.html";
   rmSync(promptsFile, { force: true });
-  const promptsRun = await spawnCli("export-prompts.ts", [
+  const promptsRun = await spawnCli("cli/export-prompts.ts", [
     "--dir", cliOut, "--count", "2", "--out", promptsFile, "--no-negative",
   ]);
   const promptsHtml = readFileSync(promptsFile, "utf8");
@@ -99,7 +97,7 @@ export async function runCliContract(): Promise<void> {
   }
   const impFolder = openOutputFolder(impOut, "");
   impFolder.issueSeeds(3);
-  const imported = await captureCli(() =>
+  const imported = await captureOutput(() =>
     importImages({ inDir: impIn, outDir: impOut, dryRun: false, salt: "" }),
   );
   results.push(check(
@@ -128,7 +126,7 @@ export async function runCliContract(): Promise<void> {
   rmSync(shortOut, { recursive: true, force: true });
   openOutputFolder(shortOut, "").issueSeeds(1);
   let refusal = "no error";
-  await captureCli(async () => {
+  await captureOutput(async () => {
     try {
       await importImages({ inDir: impIn, outDir: shortOut, dryRun: false, salt: "" });
     } catch (err) {
@@ -144,7 +142,7 @@ export async function runCliContract(): Promise<void> {
   const dryOut = "out-smoke9";
   rmSync(dryOut, { recursive: true, force: true });
   openOutputFolder(dryOut, "").issueSeeds(3);
-  const dryRun = await captureCli(() =>
+  const dryRun = await captureOutput(() =>
     importImages({ inDir: impIn, outDir: dryOut, dryRun: true, salt: "" }),
   );
   results.push(check(
@@ -160,15 +158,19 @@ export async function runCliContract(): Promise<void> {
   ));
 
   // The run: the same lines, Waiting Seeds finished first, failed Seeds left waiting.
+  // The model in the header is now the core's policy rather than a copy beside
+  // the command line, so this still compares against the model the bytes were
+  // first captured with, and still fails if either moves away from it.
   const runOut = "out-smoke11";
   rmSync(runOut, { recursive: true, force: true });
   // One worker, so the order of these lines is fixed rather than a race.
-  const failLines = await captureCli(() => run({ ...defaults, count: 3, concurrency: 1, outDir: runOut, salt: "" }, bad));
+  const failLines = await captureOutput(() =>
+    generateImages({ ...policy, count: 3, concurrency: 1, outDir: runOut, dryRun: false, salt: "" }, bad));
   const runFolder = openOutputFolder(runOut, "");
   results.push(check(
     "a failing run prints the same lines and leaves every Seed waiting",
     failLines.join("\n") === [
-      `${cliVersion} | ${defaults.model} | 3 to generate, 0 already done | seeds 1 to 3`,
+      `${cliVersion} | ${policy.model} | 3 to generate, 0 already done | seeds 1 to 3`,
       "[1] failed: fake quota error",
       "[2] failed: fake quota error",
       "[3] failed: fake quota error",
@@ -179,11 +181,12 @@ export async function runCliContract(): Promise<void> {
       runFolder.status().failed === 3,
   ));
   // One worker, so the order of these lines is fixed rather than a race.
-  const retryLines = await captureCli(() => run({ ...defaults, count: 2, concurrency: 1, outDir: runOut, salt: "" }, good));
+  const retryLines = await captureOutput(() =>
+    generateImages({ ...policy, count: 2, concurrency: 1, outDir: runOut, dryRun: false, salt: "" }, good));
   results.push(check(
     "the next run finishes Waiting Seeds first and does not advance the counter",
     retryLines.join("\n") === [
-      `${cliVersion} | ${defaults.model} | 2 to generate, 0 already done | seeds 1 to 2`,
+      `${cliVersion} | ${policy.model} | 2 to generate, 0 already done | seeds 1 to 2`,
       "[1] ok (1/2)",
       "[2] ok (2/2)",
       `\nDone. 2 ok, 0 failed. Output in ${runOut}/`,
@@ -191,8 +194,8 @@ export async function runCliContract(): Promise<void> {
       runFolder.waitingSeeds().join() === "3" && runFolder.status().next === 4 &&
       runFolder.status().done === 2 && runFolder.status().failed === 1,
   ));
-  const dryRunLines = await captureCli(() =>
-    run({ ...defaults, count: 2, outDir: runOut, dryRun: true, salt: "" }, good),
+  const dryRunLines = await captureOutput(() =>
+    generateImages({ ...policy, count: 2, outDir: runOut, dryRun: true, salt: "" }, good),
   );
   results.push(check(
     "a dry run prints the Prompt, moves no counter and writes no Frame",
@@ -202,13 +205,104 @@ export async function runCliContract(): Promise<void> {
       runFolder.status().next === 4 && runFolder.status().done === 2 && !runFolder.hasFrame(3),
   ));
 
+  // The generate entry point as a real process, which is the only way its argv
+  // parsing and its exit code can be reached: in-process, both are the caller's
+  // own decision rather than the command's. The dry run first, because it can
+  // be spawned with nothing but a folder: it parses every flag before a single
+  // Frame is asked for, and it has no failure to report.
+  const spawnOut = "out-smoke13";
+  rmSync(spawnOut, { recursive: true, force: true });
+  const spawnFolder = openOutputFolder(spawnOut, "");
+  const spawned = await spawnCli("cli/generate.ts", [
+    "--count", "2", "--model", "lite", "--out", spawnOut, "--dry-run",
+  ]);
+  results.push(check(
+    "the generate command parses its flags and prints the same lines as a process",
+    // `lite` is the short key, so the header carries the model id it resolved to
+    // rather than the word that was typed, and `--count 2` is the whole range.
+    spawned.output === [
+      `${cliVersion} | gemini-3.1-flash-lite-image | 2 to generate, 0 already done | seeds 1 to 2`,
+      `\n[1] ${spawnFolder.promptFor(1, true)}`,
+      `\n[2] ${spawnFolder.promptFor(2, true)}`,
+      "",
+    ].join("\n"),
+  ));
+  results.push(check(
+    "a spawned dry run exits 0 and writes nothing to the folder it was pointed at",
+    spawned.code === 0 &&
+      // A dry run claims Seeds without committing them, so the folder the
+      // `--out` flag named is not even created and no counter has moved.
+      !existsSync(spawnOut) &&
+      spawnFolder.status().next === 1 && spawnFolder.status().done === 0,
+  ));
+  rmSync(spawnOut, { recursive: true, force: true });
+
+  // And then the half of the exit code a dry run cannot reach: a real run that
+  // fails. This is the exit code that says a run went wrong, as against the ones
+  // that report a problem with the folder the run was pointed at.
+  //
+  // The suite has no API key and no network, which reads like it rules this out
+  // and does not. `core/gemini.ts` checks for the key before it constructs a
+  // client at all, so with no key a real run fails every Seed the same
+  // deterministic way, records the failed Attempts and comes back with failures
+  // in it — having never asked the network for anything. `test/no-network.ts` is
+  // preloaded into the child to make that last clause an observation rather than
+  // a claim: every socket, DNS lookup, TLS handshake and fetch is turned into a
+  // named failure, and the check below fails if the child's stderr carries one.
+  const failOut = "out-smoke14";
+  rmSync(failOut, { recursive: true, force: true });
+  const failFolder = openOutputFolder(failOut, "");
+  try {
+    const noKey = await spawnCli(
+      "cli/generate.ts",
+      ["--count", "2", "--concurrency", "1", "--out", failOut],
+      {},
+      [noNetwork],
+    );
+    results.push(check(
+      "a spawned run that fails exits 1, with the summary on stdout and the failures on stderr",
+      noKey.code === 1 &&
+        // No `--model`, so the header carries the model id the core's policy
+        // names rather than a key a flag would have resolved: the argv half of
+        // this check as much as the exit code half is.
+        noKey.output === [
+          `${cliVersion} | ${policy.model} | 2 to generate, 0 already done | seeds 1 to 2`,
+          "",
+          `Done. 0 ok, 2 failed. Output in ${failOut}/`,
+          "Failed seeds stay pending and run first next time.",
+          "",
+        ].join("\n") &&
+        // The failures go to stderr, as they did before the seam, and the reason
+        // is the one the vendor client gives without a key — which is also the
+        // reason no request was made.
+        noKey.error === [
+          "[1] failed: GEMINI_API_KEY is not set. Copy .env.example to .env and add your key.",
+          "[2] failed: GEMINI_API_KEY is not set. Copy .env.example to .env and add your key.",
+          "",
+        ].join("\n") &&
+        !noKey.error.includes("the smoke suite must not use the network"),
+    ));
+    results.push(check(
+      "the non-zero exit is the run's own verdict: every Seed stays waiting and every failure is recorded",
+      // Nothing was thrown out of the command: the run caught each failure,
+      // counted it, and reported it, so the archive says what the exit code says
+      // and the next run starts from exactly these Seeds.
+      failFolder.waitingSeeds().join() === "1,2" && failFolder.status().failed === 2 &&
+        failFolder.status().done === 0 && failFolder.status().next === 3 &&
+        failFolder.listFrames().length === 0,
+    ));
+  } finally {
+    // The scratch goes even if a check above threw, so a failed run cannot leave
+    // a folder behind for the next one to find.
+    rmSync(failOut, { recursive: true, force: true });
+  }
   // A salt mismatch is a report about the environment, not an unreadable
   // folder: the command says what is wrong and leaves the exit code alone.
   // An unreadable counter is the one problem that still stops it.
   const saltDir = "out-smoke12";
   rmSync(saltDir, { recursive: true, force: true });
   openOutputFolder(saltDir, "the-salt-it-started-with").claimSeeds(1);
-  const mismatched = await spawnCli("status.ts", [saltDir], { SEED_SALT: "a-different-salt" });
+  const mismatched = await spawnCli("cli/status.ts", [saltDir], { SEED_SALT: "a-different-salt" });
   results.push(check(
     "a salt mismatch makes status print the problem and exit 0",
     mismatched.code === 0 && mismatched.error.includes("SEED_SALT does not match"),
@@ -219,11 +313,12 @@ export async function runCliContract(): Promise<void> {
   writeFileSync(join(cliOut, "cursor.json"), "{ corrupt");
   results.push(check(
     "the status command still refuses an unreadable counter",
-    (await spawnCli("status.ts", [cliOut])).code === 1,
+    (await spawnCli("cli/status.ts", [cliOut])).code === 1,
   ));
   results.push(check(
     "the run still refuses an unreadable counter instead of starting again",
-    await asyncCode(() => run({ ...defaults, count: 1, outDir: cliOut, dryRun: true, salt: "" }, good)) ===
+    await asyncCode(() =>
+      generateImages({ ...policy, count: 1, outDir: cliOut, dryRun: true, salt: "" }, good)) ===
       "unreadable-counter",
   ));
 
