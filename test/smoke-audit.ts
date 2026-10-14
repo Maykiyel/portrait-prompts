@@ -209,6 +209,43 @@ export function runAudit(): void {
       withEntry.has(repoPath(plantedEntry)),
   ));
 
+  // The direction of the dependency between the two adapters. The command line
+  // and the server are adapters over one core, and neither stands on the other:
+  // a while ago the Job took its defaults from the command-line entry point,
+  // which made the server depend on the command line for no reason a reader
+  // could give. That is a property of the sources rather than of any value, so
+  // it is asked of the sources here, over the folder.
+  const importsFromCli = (sources: Map<string, string>): string[] =>
+    [...sources.keys()].filter((f) => inFolder("server", f))
+      .filter((f) => localImports(code(sources.get(f) ?? "")).some((spec) => resolveLocal(f, spec)?.startsWith("cli/")))
+      .map((f) => `${f} imports the command line`);
+  results.push(check(
+    "the server imports nothing from the command line",
+    // The server folder is read off disk rather than listed here, so a fourth
+    // module is covered by landing in the folder.
+    [...sourceText.keys()].some((f) => inFolder("server", f)) && importsFromCli(sourceText).length === 0,
+  ));
+  for (const line of importsFromCli(sourceText)) console.log(`      ${line}`);
+
+  // And it is not vacuous: a server module that reaches into the command line
+  // turns it red, and the file never outlives the probe.
+  const plantedServer = join(repoRoot, "server", "reach-around-cli.ts");
+  const PLANTED_SERVER = 'import { generateImages } from "../cli/generate";\nvoid generateImages;\n';
+  const withServer = (() => {
+    try {
+      writeFileSync(plantedServer, PLANTED_SERVER);
+      return new Map(sourceFiles().map((f) => [repoPath(f), readFileSync(f, "utf8")] as const));
+    } finally {
+      rmSync(plantedServer, { force: true });
+    }
+  })();
+  results.push(check(
+    "the server-does-not-import-the-command-line check is not vacuous: a server module that does turns it red",
+    withServer.has(repoPath(plantedServer)) &&
+      importsFromCli(withServer).includes(`${repoPath(plantedServer)} imports the command line`) &&
+      !importsFromCli(sourceText).includes(`${repoPath(plantedServer)} imports the command line`),
+  ));
+
   // The generation run writes to no terminal and names no image vendor. Asked of
   // the run and of everything it stands on rather than of one file's text, so a
   // print that arrives through a module the run imports counts as the run
