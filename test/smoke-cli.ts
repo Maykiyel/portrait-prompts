@@ -7,7 +7,7 @@
 // and the run has no terminal left to be seen on.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import sharp from "sharp";
 import { defaults, generateImages } from "../cli/generate";
@@ -192,6 +192,38 @@ export async function runCliContract(): Promise<void> {
       dryRunLines[0].endsWith("| seeds 3 to 4") &&
       runFolder.status().next === 4 && runFolder.status().done === 2 && !runFolder.hasFrame(3),
   ));
+
+  // The generate entry point as a real process, which is the only way its argv
+  // parsing and its exit code can be reached: in-process, both are the caller's
+  // own decision rather than the command's. A dry run is the only form that can
+  // be spawned, because the suite has no API key and no network, and it is
+  // enough: the flags are all parsed before a single Frame is asked for.
+  const spawnOut = "out-smoke13";
+  rmSync(spawnOut, { recursive: true, force: true });
+  const spawnFolder = openOutputFolder(spawnOut, "");
+  const spawned = await spawnCli("cli/generate.ts", [
+    "--count", "2", "--model", "lite", "--out", spawnOut, "--dry-run",
+  ]);
+  results.push(check(
+    "the generate command parses its flags and prints the same lines as a process",
+    // `lite` is the short key, so the header carries the model id it resolved to
+    // rather than the word that was typed, and `--count 2` is the whole range.
+    spawned.output === [
+      `${cliVersion} | gemini-3.1-flash-lite-image | 2 to generate, 0 already done | seeds 1 to 2`,
+      `\n[1] ${spawnFolder.promptFor(1, true)}`,
+      `\n[2] ${spawnFolder.promptFor(2, true)}`,
+      "",
+    ].join("\n"),
+  ));
+  results.push(check(
+    "a spawned dry run exits 0 and writes nothing to the folder it was pointed at",
+    spawned.code === 0 &&
+      // A dry run claims Seeds without committing them, so the folder the
+      // `--out` flag named is not even created and no counter has moved.
+      !existsSync(spawnOut) &&
+      spawnFolder.status().next === 1 && spawnFolder.status().done === 0,
+  ));
+  rmSync(spawnOut, { recursive: true, force: true });
 
   // A salt mismatch is a report about the environment, not an unreadable
   // folder: the command says what is wrong and leaves the exit code alone.
