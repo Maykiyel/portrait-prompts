@@ -5,9 +5,6 @@ import { policy } from "../core/policy";
 import type { Dataset } from "./store";
 
 const fresh = (): JobState => ({ status: "idle", total: 0, done: 0, failed: 0, log: [] });
-let job: JobState = fresh();
-
-export const getJob = () => job;
 
 /** Why the Job cannot start. The route turns this into a response, so no error here carries a status. */
 export type Refusal = { status: 400 | 409; message: string };
@@ -23,11 +20,34 @@ export function refusalFor(current: JobState, hasApiKey: boolean, req: GenerateR
 }
 
 /**
- * The Job is a module global for now — one per process, and giving the app its
- * own is #32's work. Only the dataset and the Generator are injected: the Job
- * writes Frames into the same archive the routes serve, so it takes the same
- * pointed-at folder rather than reaching for the environment to find one, and
- * it is handed the thing that makes images rather than naming a vendor itself.
+ * What one app can ask of the Job it holds. Two operations, because those are
+ * the two routes there are: the state the browser polls, and the start it asks
+ * for. The refusal is not among them — it is a question about a request rather
+ * than an action, and `refusalFor` answers it without knowing which app is
+ * asking.
+ */
+export type Job = {
+  /** The Job as it stands. The same value until something happens to it. */
+  state: () => JobState;
+  /** Begins one. Refuse first: see `refusalFor`. Answers at once, before the run has finished. */
+  start: (req: GenerateRequest) => JobState;
+};
+
+/**
+ * The Job one app holds, built here and closed over rather than kept at module
+ * scope. A module global would be one Job for every app in the process, so two
+ * apps would take turns writing over each other's counts and one app's start
+ * would be refused as a second start by another app. Held here, it belongs to
+ * the app that serves it: still one at a time, still reset on restart because
+ * nothing is written down, and still nothing persisted — the Manifest already
+ * records every Attempt, so a lost progress display after a restart costs
+ * nothing that was not already on disk.
+ *
+ * The dataset and the Generator are taken at build time for the same reason the
+ * routes close over theirs: the Job writes Frames into the same archive the
+ * routes serve, so it takes the same pointed-at folder rather than reaching for
+ * the environment to find one, and it is handed the thing that makes images
+ * rather than naming a vendor itself.
  *
  * It starts from the core's generation policy and lets the request override
  * what the request names, the same way the command line starts from it and lets
@@ -42,41 +62,47 @@ export function refusalFor(current: JobState, hasApiKey: boolean, req: GenerateR
  * arrives as text: the browser's progress bar and log are built from these
  * events, not from lines printed anywhere.
  */
-export function startJob(req: GenerateRequest, { outDir, salt }: Dataset, generate: Generator) {
-  const model = MODELS[req.model];
-  const size = req.model === "lite" ? "1K" : req.size;
+export function createJob({ outDir, salt }: Dataset, generate: Generator): Job {
+  let current = fresh();
 
-  job = { ...fresh(), status: "running", model, startedAt: new Date().toISOString() };
-  run({
-    ...policy,
-    count: req.count,
-    model,
-    imageSize: size,
-    concurrency: Math.min(Math.max(1, req.concurrency), 8),
-    useNegative: req.useNegative,
-    outDir,
-    salt,
-    generate,
-    onEvent: (event) => {
-      if (event.kind === "start") {
-        job.total = event.total;
-      } else if (event.kind === "seed") {
-        if (event.ok) job.done++;
-        else job.failed++;
-        job.log = [{ seed: event.seed, ok: event.ok, message: event.message }, ...job.log].slice(0, 50);
-      }
-      // A dry run reports Prompts rather than results and never reaches here
-      // from the browser: the Job sets no flags, so there is nothing to report.
-    },
-  })
-    .then(() => {
-      job.status = "done";
-      job.finishedAt = new Date().toISOString();
+  const start = (req: GenerateRequest) => {
+    const model = MODELS[req.model];
+    const size = req.model === "lite" ? "1K" : req.size;
+
+    current = { ...fresh(), status: "running", model, startedAt: new Date().toISOString() };
+    run({
+      ...policy,
+      count: req.count,
+      model,
+      imageSize: size,
+      concurrency: Math.min(Math.max(1, req.concurrency), 8),
+      useNegative: req.useNegative,
+      outDir,
+      salt,
+      generate,
+      onEvent: (event) => {
+        if (event.kind === "start") {
+          current.total = event.total;
+        } else if (event.kind === "seed") {
+          if (event.ok) current.done++;
+          else current.failed++;
+          current.log = [{ seed: event.seed, ok: event.ok, message: event.message }, ...current.log].slice(0, 50);
+        }
+        // A dry run reports Prompts rather than results and never reaches here
+        // from the browser: the Job sets no flags, so there is nothing to report.
+      },
     })
-    .catch((err: unknown) => {
-      job.status = "error";
-      job.error = err instanceof Error ? err.message : String(err);
-      job.finishedAt = new Date().toISOString();
-    });
-  return job;
+      .then(() => {
+        current.status = "done";
+        current.finishedAt = new Date().toISOString();
+      })
+      .catch((err: unknown) => {
+        current.status = "error";
+        current.error = err instanceof Error ? err.message : String(err);
+        current.finishedAt = new Date().toISOString();
+      });
+    return current;
+  };
+
+  return { state: () => current, start };
 }

@@ -550,14 +550,18 @@ try {
   const start = (body: unknown) =>
     api.request("/api/generate", { method: "POST", body: JSON.stringify(body) });
   // The run is not awaited by the route, so the Job is polled the way the
-  // browser polls it until it leaves running.
-  const settle = async () => {
+  // browser polls it until it leaves running. It is the app that is named,
+  // because each app polls its own Job: settling one app's Job by watching
+  // another's would wait for a state that app is never going to reach.
+  const settle = async (polled: typeof api) => {
+    const now = async () =>
+      (await (await polled.request("/api/generate/job")).json()) as import("../shared/api-types").JobState;
     for (let attempt = 0; attempt < 750; attempt++) {
-      const state = await jobNow();
+      const state = await now();
       if (state.status !== "running") return state;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    return jobNow();
+    return now();
   };
   results.push(check("a Job that has not started reports idle", (await jobNow()).status === "idle"));
   process.env.GEMINI_API_KEY = "a-key-the-fake-Generator-never-uses";
@@ -573,7 +577,7 @@ try {
       startedAtOnce.failed === 0 && startedAtOnce.model === "gemini-3.1-flash-image" &&
       startedAtOnce.log.length === 0 && typeof startedAtOnce.startedAt === "string",
   ));
-  const landed = await settle();
+  const landed = await settle(api);
   const landedFrames = (await (await api.request("/api/images")).json()) as import("../shared/api-types").ImageItem[];
   results.push(check(
     "a finished Job left its Frames in the archive and its per-Seed log newest-first",
@@ -584,13 +588,14 @@ try {
   ));
 
   // A second app over the same dataset, with a Generator that fails. Two apps
-  // are legitimate: the Job is one per process today (#32 gives each app its
-  // own), and what is under test here is the translation, not the sharing.
+  // over one dataset are legitimate, and each holds its own Job, so this one is
+  // polled through its own route: what is under test here is the translation,
+  // and a Job is asked about through the app that owns it.
   const failingApi = createApp({ outDir: routeDir, salt: "route-salt" }, bad);
   const startFailing = (body: unknown) =>
     failingApi.request("/api/generate", { method: "POST", body: JSON.stringify(body) });
   await startFailing({ count: 2, model: "flash", size: "1K", concurrency: 1, useNegative: false });
-  const faulted = await settle();
+  const faulted = await settle(failingApi);
   results.push(check(
     "a Job that fails counts the failures and logs the Seeds that failed, which stay waiting",
     faulted.status === "done" && faulted.total === 2 && faulted.done === 0 && faulted.failed === 2 &&
@@ -599,7 +604,7 @@ try {
       seeded.waitingSeeds().join() === "4,5" && seeded.status().next === 6,
   ));
   await startFailing({ count: 60, model: "flash", size: "1K", concurrency: 1, useNegative: false });
-  const capped = await settle();
+  const capped = await settle(failingApi);
   results.push(check(
     "the per-Seed log keeps the newest fifty entries and lets the rest go",
     // Seeds 4 and 5 are still waiting from the failed Job above, so this run
@@ -613,7 +618,7 @@ try {
   // rather than reporting a Job that quietly did nothing.
   writeFileSync(join(routeDir, "cursor.json"), "{ corrupt");
   await start({ count: 1, model: "flash", size: "1K", concurrency: 1, useNegative: false });
-  const broken = await settle();
+  const broken = await settle(api);
   results.push(check(
     "a run that cannot start leaves the Job in error with what went wrong",
     broken.status === "error" && typeof broken.error === "string" && broken.error.includes("counter") &&
@@ -794,6 +799,31 @@ const statusOf = async (api: ReturnType<typeof createApp>) =>
   (await (await api.request("/api/status")).json()) as import("../shared/api-types").Status;
 const framesOf = async (api: ReturnType<typeof createApp>) =>
   (await (await api.request("/api/images")).json()) as import("../shared/api-types").ImageItem[];
+
+// The Jobs these two apps hold are independent too, and that cannot be shown by
+// looking inside anything: it is asked of each app through its own polling route
+// while the other's Job is running.
+//
+// The Generator is held rather than immediate, because the claim is about two
+// Jobs at one moment. Starting a Job answers `running` before the run has
+// finished — the route does not await the run, which is exactly what lets the
+// browser poll it — but a Generator that resolves at once lets the Job finish in
+// a later tick, so "the other app is idle" would be a race against a background
+// promise this check cannot see. This one waits for the checks below to open the
+// gate, and opens the gate itself a few seconds in so that a failing assertion
+// cannot leave the suite waiting on a promise that will never land.
+const gate = { open: false };
+const attempted = { calls: 0 };
+const held: Generator = async () => {
+  attempted.calls++;
+  for (let waited = 0; !gate.open && waited < 5000; waited += 10) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return good();
+};
+// A Job asks the process whether an API key is set on every start, and nothing
+// else does; the fake Generator never uses one. Put back below.
+const savedJobKey = process.env.GEMINI_API_KEY;
 try {
   // Fixture setup asks the module directly; every assertion below is an HTTP
   // response from an app.
@@ -832,8 +862,85 @@ try {
     alphaFrames.length === 1 && alphaFrames[0].seed === 1 && alphaFrames[0].version === "alpha-v1" &&
     betaFrames.length === 0,
   ));
+
+  // Two more apps over the same two datasets, one each, both driven by the held
+  // Generator, so that a Job can be started against one while the other is
+  // running. The alpha and beta apps above are the control: alpha shares a
+  // dataset with the first of these two and beta with the second, and neither
+  // is ever given a Job at all.
+  const alphaJob = createApp({ outDir: alphaDir, salt: "alpha" }, held);
+  const betaJob = createApp({ outDir: betaDir, salt: "" }, held);
+  const jobOf = async (app: ReturnType<typeof createApp>) =>
+    (await (await app.request("/api/generate/job")).json()) as import("../shared/api-types").JobState;
+  const startOn = (app: ReturnType<typeof createApp>) =>
+    app.request("/api/generate", {
+      method: "POST",
+      body: JSON.stringify({ count: 1, model: "flash", size: "1K", concurrency: 1, useNegative: false }),
+    });
+  const settleJob = async (app: ReturnType<typeof createApp>) => {
+    for (let attempt = 0; attempt < 750; attempt++) {
+      const state = await jobOf(app);
+      if (state.status !== "running") return state;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return jobOf(app);
+  };
+  process.env.GEMINI_API_KEY = "a-key-the-fake-Generator-never-uses";
+  const answeredAtOnce = await startOn(alphaJob);
+  const alphaStarted = await jobOf(alphaJob);
+  results.push(check(
+    "a Job started on one app leaves every other app's Job idle",
+    answeredAtOnce.status === 200 &&
+      ((await answeredAtOnce.json()) as import("../shared/api-types").JobState).status === "running" &&
+      alphaStarted.status === "running" && alphaStarted.total === 1 && alphaStarted.done === 0 &&
+      (await jobOf(betaJob)).status === "idle" &&
+      (await jobOf(alpha)).status === "idle" && (await jobOf(beta)).status === "idle",
+  ));
+  // That the Job above is observably still running is not left to the timing of
+  // a background promise: the gate is shut, so the run cannot have finished, and
+  // the Generator having been asked for a Frame is proof that it got going rather
+  // than sitting queued. Without this the check would also pass against a Job
+  // that was merely slow, and would stop passing against one that was never
+  // running at all.
+  results.push(check(
+    "the Job above is running and holding on its Generator, not merely unfinished",
+    gate.open === false && attempted.calls === 1 && alphaStarted.status === "running" &&
+      alphaStarted.log.length === 0 && openOutputFolder(alphaDir, "alpha").hasFrame(2) === false,
+  ));
+  // The refusal belongs to the Job that refuses, so it is asked of two apps in
+  // the same breath: a second start where one is running, and the same start on
+  // the app that has none.
+  const secondOnAlpha = await startOn(alphaJob);
+  const firstOnBeta = await startOn(betaJob);
+  results.push(check(
+    "a running Job refuses a second start on its own app and on no other",
+    secondOnAlpha.status === 409 &&
+      ((await secondOnAlpha.json()) as { error: string }).error === "A job is already running" &&
+      firstOnBeta.status === 200 &&
+      ((await firstOnBeta.json()) as import("../shared/api-types").JobState).status === "running" &&
+      (await jobOf(alphaJob)).status === "running" && (await jobOf(betaJob)).status === "running",
+  ));
+  // Both Jobs finish on their own datasets: alpha's waiting Seed 2, beta's 1.
+  gate.open = true;
+  const [alphaLanded, betaLanded] = await Promise.all([settleJob(alphaJob), settleJob(betaJob)]);
+  results.push(check(
+    "each app's polling route reports its own Job and only its own",
+    alphaLanded.status === "done" && alphaLanded.total === 1 && alphaLanded.done === 1 &&
+      alphaLanded.log.map((entry) => `${entry.seed}:${entry.ok}`).join() === "2:true" &&
+      betaLanded.status === "done" && betaLanded.total === 1 && betaLanded.done === 1 &&
+      betaLanded.log.map((entry) => `${entry.seed}:${entry.ok}`).join() === "1:true" &&
+      // The apps that were never given a Job still report idle, one over a
+      // dataset that now holds a second Frame and one over a dataset that never
+      // held any.
+      (await jobOf(alpha)).status === "idle" && (await jobOf(beta)).status === "idle" &&
+      (await framesOf(alpha)).map((frame) => frame.seed).join() === "2,1" &&
+      (await framesOf(beta)).map((frame) => frame.seed).join() === "1",
+  ));
 } finally {
   process.chdir(repoRoot);
+  gate.open = true;
+  if (savedJobKey === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = savedJobKey;
   rmSync(pairBase, { recursive: true, force: true });
 }
 
