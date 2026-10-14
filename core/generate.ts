@@ -54,9 +54,11 @@ export type PromptEvent = {
 export type ProgressEvent = StartEvent | SeedEvent | PromptEvent;
 
 /**
- * What one run was asked to do. Every value is concrete: the policy that picks
- * defaults is the caller's, so a dry run has no business being anyone's default
- * and the run never has to be told what "ten" means.
+ * What one run was asked to do. Every value is concrete: the run never has to be
+ * told what "ten" means. The default generation policy that callers start from
+ * is stated once in `core/policy.ts`, beside this module, and each caller
+ * overrides what it means to override — so a dry run is not a default of
+ * anything's, and the run itself holds no opinion about any value.
  */
 export type RunRequest = {
   /** How many Seeds to claim. Waiting Seeds are finished before fresh ones. */
@@ -76,10 +78,15 @@ export type RunRequest = {
   salt: string;
   /** What makes the images. Required, not defaulted: this module names no vendor. */
   generate: Generator;
-  /** Name the first Seed by hand, filling the gap up to the last one. Undefined follows the Seed counter. */
+  /** Name the first Seed by hand, filling the gap up to the last one. Absent follows the Seed counter. */
   start?: number;
-  /** Claim without committing: report the Prompts, write nothing, move nothing. */
-  dryRun: boolean;
+  /**
+   * Claim without committing: report the Prompts, write nothing, move nothing.
+   * Absent means a real run. It is optional because a caller that never wants a
+   * dry run should say nothing rather than say `false` and look as though it
+   * had chosen — the Job, which has no dry run, names neither flag.
+   */
+  dryRun?: boolean;
   /**
    * Where progress goes. Optional, so a caller that wants only the result is
    * left alone and this module stays silent.
