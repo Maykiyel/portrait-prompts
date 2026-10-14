@@ -9,7 +9,7 @@ import type { GenerateRequest } from "../shared/api-types";
 import { ArchiveError, type ArchiveErrorCode } from "../core/errors";
 import type { Generator } from "../core/generate";
 import { seedLabel } from "../core/output-folder";
-import { getJob, refusalFor, startJob } from "./jobs";
+import { createJob, refusalFor } from "./jobs";
 import {
   createStore, importRefusal, type Dataset, type FrameStream,
 } from "./store";
@@ -37,6 +37,10 @@ const send = (c: Context, stream: FrameStream) => c.body(Readable.toWeb(stream) 
 export function createApp(dataset: Dataset, generate: Generator): Hono {
   const app = new Hono();
   const store = createStore(dataset);
+  // The Job belongs to this app and not to the process: built here and closed
+  // over, so the routes below ask their own Job and no other app's, and a test
+  // can hold one of its own.
+  const job = createJob(dataset, generate);
 
   app.onError((err, c) => {
     if (err instanceof ArchiveError) return c.json({ error: err.message }, STATUS_BY_CODE[err.code]);
@@ -92,11 +96,11 @@ export function createApp(dataset: Dataset, generate: Generator): Hono {
 
   api.post("/generate", async (c) => {
     const req = await c.req.json<GenerateRequest>();
-    const refused = refusalFor(getJob(), Boolean(process.env.GEMINI_API_KEY), req);
+    const refused = refusalFor(job.state(), Boolean(process.env.GEMINI_API_KEY), req);
     if (refused) return c.json({ error: refused.message }, refused.status);
-    return c.json(startJob(req, dataset, generate));
+    return c.json(job.start(req));
   });
-  api.get("/generate/job", (c) => c.json(getJob()));
+  api.get("/generate/job", (c) => c.json(job.state()));
 
   app.route("/api", api);
   return app;
