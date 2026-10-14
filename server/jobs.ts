@@ -81,6 +81,9 @@ export function createJob({ outDir, salt }: Dataset, generate: Generator): Job {
       salt,
       generate,
       onEvent: (event) => {
+        // One branch per kind of event, the same dispatch `cli/generate.ts` makes:
+        // `kind` is what says which event this is, never the presence or absence
+        // of one of its fields.
         if (event.kind === "start") {
           current.total = event.total;
         } else if (event.kind === "seed") {

@@ -9,6 +9,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import sharp from "sharp";
 import { generateImages } from "../cli/generate";
 import { importImages } from "../cli/import-images";
@@ -19,18 +20,25 @@ import { asyncCode, bad, captureOutput, check, good, promptFiles, repoRoot, resu
 export async function runCliContract(): Promise<void> {
   const cliVersion = promptFiles().version;
   // A command run as a real process, so its argv parsing and exit code are exercised.
-  const spawnCli = (script: string, args: string[], env: Record<string, string> = {}) =>
+  // `preloads` are loaded into the child ahead of the command itself, which is how
+  // the tripwire in `test/no-network.ts` gets in without the command knowing.
+  const spawnCli = (
+    script: string, args: string[], env: Record<string, string> = {}, preloads: string[] = [],
+  ) =>
     new Promise<{ code: number; output: string; error: string }>((resolve) => {
       let text = "";
       let errText = "";
-      const child = execFile(process.execPath, ["--import", "tsx", script, ...args], {
-        cwd: repoRoot,
-        env: { ...process.env, SEED_SALT: "", GEMINI_API_KEY: "", ...env },
-      });
+      const child = execFile(
+        process.execPath,
+        ["--import", "tsx", ...preloads.flatMap((p) => ["--import", p]), script, ...args],
+        { cwd: repoRoot, env: { ...process.env, SEED_SALT: "", GEMINI_API_KEY: "", ...env } },
+      );
       child.stdout?.on("data", (c: Buffer) => (text += c.toString()));
       child.stderr?.on("data", (c: Buffer) => (errText += c.toString()));
       child.on("close", (code) => resolve({ code: code ?? 0, output: text, error: errText }));
     });
+  // A file:// URL, because `--import` will not take a bare Windows path.
+  const noNetwork = pathToFileURL(join(repoRoot, "test", "no-network.ts")).href;
 
   // A fixture archive: two Frames, one failed Attempt, four Waiting Seeds.
   const cliOut = "out-smoke7";
@@ -199,9 +207,9 @@ export async function runCliContract(): Promise<void> {
 
   // The generate entry point as a real process, which is the only way its argv
   // parsing and its exit code can be reached: in-process, both are the caller's
-  // own decision rather than the command's. A dry run is the only form that can
-  // be spawned, because the suite has no API key and no network, and it is
-  // enough: the flags are all parsed before a single Frame is asked for.
+  // own decision rather than the command's. The dry run first, because it can
+  // be spawned with nothing but a folder: it parses every flag before a single
+  // Frame is asked for, and it has no failure to report.
   const spawnOut = "out-smoke13";
   rmSync(spawnOut, { recursive: true, force: true });
   const spawnFolder = openOutputFolder(spawnOut, "");
@@ -229,6 +237,65 @@ export async function runCliContract(): Promise<void> {
   ));
   rmSync(spawnOut, { recursive: true, force: true });
 
+  // And then the half of the exit code a dry run cannot reach: a real run that
+  // fails. This is the exit code that says a run went wrong, as against the ones
+  // that report a problem with the folder the run was pointed at.
+  //
+  // The suite has no API key and no network, which reads like it rules this out
+  // and does not. `core/gemini.ts` checks for the key before it constructs a
+  // client at all, so with no key a real run fails every Seed the same
+  // deterministic way, records the failed Attempts and comes back with failures
+  // in it — having never asked the network for anything. `test/no-network.ts` is
+  // preloaded into the child to make that last clause an observation rather than
+  // a claim: every socket, DNS lookup, TLS handshake and fetch is turned into a
+  // named failure, and the check below fails if the child's stderr carries one.
+  const failOut = "out-smoke14";
+  rmSync(failOut, { recursive: true, force: true });
+  const failFolder = openOutputFolder(failOut, "");
+  try {
+    const noKey = await spawnCli(
+      "cli/generate.ts",
+      ["--count", "2", "--concurrency", "1", "--out", failOut],
+      {},
+      [noNetwork],
+    );
+    results.push(check(
+      "a spawned run that fails exits 1, with the summary on stdout and the failures on stderr",
+      noKey.code === 1 &&
+        // No `--model`, so the header carries the model id the core's policy
+        // names rather than a key a flag would have resolved: the argv half of
+        // this check as much as the exit code half is.
+        noKey.output === [
+          `${cliVersion} | ${policy.model} | 2 to generate, 0 already done | seeds 1 to 2`,
+          "",
+          `Done. 0 ok, 2 failed. Output in ${failOut}/`,
+          "Failed seeds stay pending and run first next time.",
+          "",
+        ].join("\n") &&
+        // The failures go to stderr, as they did before the seam, and the reason
+        // is the one the vendor client gives without a key — which is also the
+        // reason no request was made.
+        noKey.error === [
+          "[1] failed: GEMINI_API_KEY is not set. Copy .env.example to .env and add your key.",
+          "[2] failed: GEMINI_API_KEY is not set. Copy .env.example to .env and add your key.",
+          "",
+        ].join("\n") &&
+        !noKey.error.includes("the smoke suite must not use the network"),
+    ));
+    results.push(check(
+      "the non-zero exit is the run's own verdict: every Seed stays waiting and every failure is recorded",
+      // Nothing was thrown out of the command: the run caught each failure,
+      // counted it, and reported it, so the archive says what the exit code says
+      // and the next run starts from exactly these Seeds.
+      failFolder.waitingSeeds().join() === "1,2" && failFolder.status().failed === 2 &&
+        failFolder.status().done === 0 && failFolder.status().next === 3 &&
+        failFolder.listFrames().length === 0,
+    ));
+  } finally {
+    // The scratch goes even if a check above threw, so a failed run cannot leave
+    // a folder behind for the next one to find.
+    rmSync(failOut, { recursive: true, force: true });
+  }
   // A salt mismatch is a report about the environment, not an unreadable
   // folder: the command says what is wrong and leaves the exit code alone.
   // An unreadable counter is the one problem that still stops it.

@@ -26,7 +26,8 @@ import { createStore } from "../server/store";
 import { runAudit } from "./smoke-audit";
 import { runCliContract } from "./smoke-cli";
 import {
-  asyncCode, bad, captureOutput, check, errorCode, good, promptFiles, repoRoot, results, streamBytes,
+  asyncCode, bad, captureOutput, check, errorCode, good, jobOf, promptFiles, repoRoot, results,
+  settleJob, streamBytes,
 } from "./smoke-harness";
 
 const out = "out-smoke";
@@ -545,39 +546,22 @@ try {
   // Job state the browser polls and the run underneath them, with no API key in
   // use and no network. The key below is only what the refusal check looks for —
   // the Job asks the process whether one is set, and the fake never asks for one.
-  const jobNow = async () =>
-    (await (await api.request("/api/generate/job")).json()) as import("../shared/api-types").JobState;
   const start = (body: unknown) =>
     api.request("/api/generate", { method: "POST", body: JSON.stringify(body) });
-  // The run is not awaited by the route, so the Job is polled the way the
-  // browser polls it until it leaves running. It is the app that is named,
-  // because each app polls its own Job: settling one app's Job by watching
-  // another's would wait for a state that app is never going to reach.
-  const settle = async (polled: typeof api) => {
-    const now = async () =>
-      (await (await polled.request("/api/generate/job")).json()) as import("../shared/api-types").JobState;
-    for (let attempt = 0; attempt < 750; attempt++) {
-      const state = await now();
-      if (state.status !== "running") return state;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    return now();
-  };
-  results.push(check("a Job that has not started reports idle", (await jobNow()).status === "idle"));
+  results.push(check("a Job that has not started reports idle", (await jobOf(api)).status === "idle"));
   process.env.GEMINI_API_KEY = "a-key-the-fake-Generator-never-uses";
   // One worker throughout: the log is newest-first, so which Seed arrives last is
   // the order of the work, and with more than one worker that is a race rather
   // than a fact about the Job. Concurrency itself is the run's business and is
   // exercised where a result is what matters, not an order.
-  const startedAtOnce = (await (await start({ count: 2, model: "flash", size: "1K", concurrency: 1, useNegative: false })).json()) as
-    import("../shared/api-types").JobState;
+  const startedAtOnce = (await (await start({ count: 2, model: "flash", size: "1K", concurrency: 1, useNegative: false })).json()) as JobState;
   results.push(check(
     "starting a Job answers at once, running, with the total the run reported",
     startedAtOnce.status === "running" && startedAtOnce.total === 2 && startedAtOnce.done === 0 &&
       startedAtOnce.failed === 0 && startedAtOnce.model === "gemini-3.1-flash-image" &&
       startedAtOnce.log.length === 0 && typeof startedAtOnce.startedAt === "string",
   ));
-  const landed = await settle(api);
+  const landed = await settleJob(api);
   const landedFrames = (await (await api.request("/api/images")).json()) as import("../shared/api-types").ImageItem[];
   results.push(check(
     "a finished Job left its Frames in the archive and its per-Seed log newest-first",
@@ -595,7 +579,7 @@ try {
   const startFailing = (body: unknown) =>
     failingApi.request("/api/generate", { method: "POST", body: JSON.stringify(body) });
   await startFailing({ count: 2, model: "flash", size: "1K", concurrency: 1, useNegative: false });
-  const faulted = await settle(failingApi);
+  const faulted = await settleJob(failingApi);
   results.push(check(
     "a Job that fails counts the failures and logs the Seeds that failed, which stay waiting",
     faulted.status === "done" && faulted.total === 2 && faulted.done === 0 && faulted.failed === 2 &&
@@ -604,7 +588,7 @@ try {
       seeded.waitingSeeds().join() === "4,5" && seeded.status().next === 6,
   ));
   await startFailing({ count: 60, model: "flash", size: "1K", concurrency: 1, useNegative: false });
-  const capped = await settle(failingApi);
+  const capped = await settleJob(failingApi);
   results.push(check(
     "the per-Seed log keeps the newest fifty entries and lets the rest go",
     // Seeds 4 and 5 are still waiting from the failed Job above, so this run
@@ -618,7 +602,7 @@ try {
   // rather than reporting a Job that quietly did nothing.
   writeFileSync(join(routeDir, "cursor.json"), "{ corrupt");
   await start({ count: 1, model: "flash", size: "1K", concurrency: 1, useNegative: false });
-  const broken = await settle(api);
+  const broken = await settleJob(api);
   results.push(check(
     "a run that cannot start leaves the Job in error with what went wrong",
     broken.status === "error" && typeof broken.error === "string" && broken.error.includes("counter") &&
@@ -701,18 +685,8 @@ try {
   };
   const jobSpy = policySpy();
   const jobApp = createApp({ outDir: join(policyBase, "job-archive"), salt: "" }, jobSpy.generate);
-  // The route answers at once and the run is not awaited, so the Job is polled
-  // the way the browser polls it until it leaves running.
-  const settle = async (app: ReturnType<typeof createApp>) => {
-    for (let attempt = 0; attempt < 750; attempt++) {
-      const state = (await (await app.request("/api/generate/job")).json()) as JobState;
-      if (state.status !== "running") return state;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    return (await (await app.request("/api/generate/job")).json()) as JobState;
-  };
   await jobApp.request("/api/generate", { method: "POST", body: JSON.stringify(repeating) });
-  const jobState = await settle(jobApp);
+  const jobState = await settleJob(jobApp);
   const jobRun = asRun(jobSpy);
 
   results.push(check(
@@ -756,7 +730,7 @@ try {
     method: "POST",
     body: JSON.stringify({ count: 2, model: "pro", size: "2K", concurrency: 1, useNegative: false }),
   });
-  const overState = await settle(overApp);
+  const overState = await settleJob(overApp);
   results.push(check(
     "the Job lets the request override what it names and takes the policy for what it cannot",
     overState.status === "done" && overState.total === 2 && overState.model === MODELS.pro &&
@@ -870,28 +844,18 @@ try {
   // is ever given a Job at all.
   const alphaJob = createApp({ outDir: alphaDir, salt: "alpha" }, held);
   const betaJob = createApp({ outDir: betaDir, salt: "" }, held);
-  const jobOf = async (app: ReturnType<typeof createApp>) =>
-    (await (await app.request("/api/generate/job")).json()) as import("../shared/api-types").JobState;
   const startOn = (app: ReturnType<typeof createApp>) =>
     app.request("/api/generate", {
       method: "POST",
       body: JSON.stringify({ count: 1, model: "flash", size: "1K", concurrency: 1, useNegative: false }),
     });
-  const settleJob = async (app: ReturnType<typeof createApp>) => {
-    for (let attempt = 0; attempt < 750; attempt++) {
-      const state = await jobOf(app);
-      if (state.status !== "running") return state;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    return jobOf(app);
-  };
   process.env.GEMINI_API_KEY = "a-key-the-fake-Generator-never-uses";
   const answeredAtOnce = await startOn(alphaJob);
   const alphaStarted = await jobOf(alphaJob);
   results.push(check(
     "a Job started on one app leaves every other app's Job idle",
     answeredAtOnce.status === 200 &&
-      ((await answeredAtOnce.json()) as import("../shared/api-types").JobState).status === "running" &&
+      ((await answeredAtOnce.json()) as JobState).status === "running" &&
       alphaStarted.status === "running" && alphaStarted.total === 1 && alphaStarted.done === 0 &&
       (await jobOf(betaJob)).status === "idle" &&
       (await jobOf(alpha)).status === "idle" && (await jobOf(beta)).status === "idle",
@@ -917,7 +881,7 @@ try {
     secondOnAlpha.status === 409 &&
       ((await secondOnAlpha.json()) as { error: string }).error === "A job is already running" &&
       firstOnBeta.status === 200 &&
-      ((await firstOnBeta.json()) as import("../shared/api-types").JobState).status === "running" &&
+      ((await firstOnBeta.json()) as JobState).status === "running" &&
       (await jobOf(alphaJob)).status === "running" && (await jobOf(betaJob)).status === "running",
   ));
   // Both Jobs finish on their own datasets: alpha's waiting Seed 2, beta's 1.
