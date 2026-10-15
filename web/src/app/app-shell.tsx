@@ -2,10 +2,10 @@ import { NavLink, Outlet } from "react-router";
 import { AlertCircle, ClipboardList, GalleryHorizontal, LayoutDashboard, Monitor, Moon, Sparkles, Sun, Upload } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/shared/components/ui/alert";
 import { Button } from "@/shared/components/ui/button";
+import { useSettings, type Theme } from "@/shared/lib/settings-store";
 import { useStatus } from "@/shared/lib/status-api";
 import { cn } from "@/shared/lib/utils";
 import { RouteBoundary } from "./route-boundary";
-import { useSettings, type Theme } from "./settings-store";
 
 const nav = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },

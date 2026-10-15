@@ -1,10 +1,13 @@
 // The seam audit, in its own file because it changes for its own
 // reason: the claim that nothing reaches the output folder except
-// through output-folder.ts. Every other check in the smoke test asks
-// the output-folder module questions; this block reads source text
-// instead, and it is here to keep the ownership claim global. Anything
-// that can name one of the archive's private names, or pick up a
-// filesystem without a reason on record, fails the run.
+// through output-folder.ts, and the claim that the browser's own
+// layers only reach down. Every other check in the smoke test asks
+// the output-folder module questions; these blocks read source text
+// instead, and they are here because neither claim is visible from
+// any one caller's point of view — a module's ownership and a folder's
+// reach are both properties of everything at once. Anything that can
+// name one of the archive's private names, or pick up a filesystem
+// without a reason on record, fails the run.
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { check, repoRoot, results } from "./smoke-harness";
@@ -187,9 +190,14 @@ export function runAudit(): void {
   // Comments are not code: the graph below is about what a file imports, not
   // about what a file says it once did.
   const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
-  const localImports = (text: string): string[] =>
-    [...code(text).matchAll(/\bfrom\s*["'](\.[^"']*)["']|\bimport\s*\(\s*["'](\.[^"']*)["']\s*\)/g)]
+  // Every module specifier a file names, alias or relative, whether a named
+  // import or a dynamic one. The graph wants the relative half and the
+  // layering claims want the alias half, so the shape of a specifier is settled
+  // once here rather than by two regular expressions that have to agree.
+  const specifiers = (text: string): string[] =>
+    [...code(text).matchAll(/\bfrom\s*["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']\s*\)/g)]
       .map((m) => m[1] ?? m[2] ?? "");
+  const localImports = (text: string): string[] => specifiers(text).filter((spec) => spec.startsWith("."));
   // Paths here are repo-relative with forward slashes, so an anchor on the root
   // before the module's own folder and then back through repoPath normalises the
   // ".." out the same way on every platform.
@@ -313,5 +321,98 @@ export function runAudit(): void {
     "the run's silence is not vacuous: a print in the run, or in a module it stands on, turns it red",
     narrates(own, RUN).includes(RUN) && narrates(beneath, RUN).includes(OWNER) &&
       !narrators.includes(RUN) && !narrators.includes(OWNER),
+  ));
+
+  // The browser has layers of its own under web/src: the composition root in
+  // app/, a feature per screen in features/, the pieces more than one feature
+  // stands on in shared/, and lib/ for what the browser cannot share with the
+  // core. The folders only mean anything if each layer stands on what is
+  // beneath it, and this used to be false: the settings store — shared state, a
+  // theme and a generation preference — sat in the composition root, so a shared
+  // primitive and two feature pages reached upward for it, and at folder
+  // granularity app and features pointed at each other. The store has moved;
+  // what is asked here is the claim that would have caught it.
+  const WEB = "web/src";
+  const APP = `${WEB}/app`;
+  // A specifier in the browser's own words, as a repo path: `@/` is web/src, and
+  // a relative one is anchored on the importing file's own folder. Anything else
+  // is a package or the repo's HTTP contract types, which are not one of these
+  // four layers — which is also why the two folders called shared cannot be
+  // confused for one another here.
+  const named = (from: string, spec: string): string | undefined =>
+    spec.startsWith("@/") ? `${WEB}/${spec.slice(2)}`
+      : spec.startsWith(".") ? repoPath(join(repoRoot, dirname(from), spec))
+      : undefined;
+  const inside = (file: string, folder: string) => file === folder || file.startsWith(`${folder}/`);
+  // The root is the only layer allowed to stand on the features beneath it, and
+  // the only layer anything may not stand on. Every file in the browser is asked,
+  // so a file added to a layer tomorrow is covered by landing in it.
+  const reachesUp = (sources: Map<string, string>): string[] =>
+    [...sources].filter(([f]) => inFolder(WEB, f) && !inFolder(APP, f))
+      .filter(([f, s]) => specifiers(s).some((spec) => inside(named(f, spec) ?? "", APP)))
+      .map(([f]) => `${f} reaches up into the composition root`);
+  const upward = reachesUp(sourceText);
+  results.push(check("nothing below the composition root reaches up into it", upward.length === 0));
+  for (const line of upward) console.log(`      ${line}`);
+
+  // And it is not vacuous: a shared primitive reaching back up for the store is
+  // the exact edge this move removed, so planting one has to turn the claim red,
+  // and the file must not outlive the probe.
+  const plantedUp = join(repoRoot, WEB, "shared", "components", "reach-around-app.ts");
+  const PLANTED_UP = 'import { useSettings } from "@/app/settings-store";\nvoid useSettings;\n';
+  const withUp = whilePlanted([{ path: plantedUp, contents: PLANTED_UP }], readAll);
+  results.push(check(
+    "the no-upward-reach claim is not vacuous: a shared primitive that reaches back up turns it red",
+    withUp.has(repoPath(plantedUp)) &&
+      reachesUp(withUp).includes(`${repoPath(plantedUp)} reaches up into the composition root`) &&
+      !reachesUp(sourceText).includes(`${repoPath(plantedUp)} reaches up into the composition root`),
+  ));
+
+  // And the other way round inside the tree. A feature is a screen's own: the
+  // Gallery reaching into the Prompts page means the two are one screen split in
+  // two, and the next change to either one has to know about the other. Same
+  // convention as everywhere else in the browser — a feature names its own
+  // siblings relatively, or reaches down into shared/ — so an alias at another
+  // feature is the only spelling this has to catch.
+  const FEATURES = `${WEB}/features`;
+  const featureOf = (file: string) => file.slice(FEATURES.length + 1).split("/")[0];
+  const reachesFeature = (sources: Map<string, string>): string[] =>
+    [...sources].filter(([f]) => inFolder(FEATURES, f))
+      .filter(([f, s]) => specifiers(s).some((spec) => {
+        const target = named(f, spec);
+        return target !== undefined && inFolder(FEATURES, target) && featureOf(target) !== featureOf(f);
+      }))
+      .map(([f]) => `${f} imports another feature`);
+  const sideways = reachesFeature(sourceText);
+  results.push(check("no feature stands on a sibling feature", sideways.length === 0));
+  for (const line of sideways) console.log(`      ${line}`);
+
+  const plantedSideways = join(repoRoot, FEATURES, "gallery", "reach-around-feature.ts");
+  const PLANTED_SIDEWAYS = 'import { useCopied } from "@/features/prompts/copied-store";\nvoid useCopied;\n';
+  const withSideways = whilePlanted([{ path: plantedSideways, contents: PLANTED_SIDEWAYS }], readAll);
+  results.push(check(
+    "the no-sibling-feature claim is not vacuous: a feature that reaches sideways turns it red",
+    withSideways.has(repoPath(plantedSideways)) &&
+      reachesFeature(withSideways).includes(`${repoPath(plantedSideways)} imports another feature`) &&
+      !reachesFeature(sourceText).includes(`${repoPath(plantedSideways)} imports another feature`),
+  ));
+
+  // What is left of the root once the store has left it: the one place that may
+  // stand on a feature, standing on each of them lazily, so a route's code is
+  // fetched when the user first goes there. The features are read off disk, so a
+  // sixth one is covered by landing in the folder rather than by being added to
+  // a list here — and a route that stopped being lazy would leave this with too
+  // few imports rather than with a claim that quietly went quiet.
+  const features = new Set(everyFileIn(FEATURES).map(featureOf));
+  const ROUTER = `${APP}/router.tsx`;
+  const lazyRoutes = (sources: Map<string, string>): string[] =>
+    [...code(sources.get(ROUTER) ?? "").matchAll(/lazy\(\s*\(\s*\)\s*=>\s*import\(\s*["'](@\/features\/[^"']+)["']/g)]
+      .map((m) => named(ROUTER, m[1]) ?? "");
+  const routes = lazyRoutes(sourceText);
+  results.push(check(
+    "the composition root loads every feature route lazily, one chunk each",
+    features.size > 0 && routes.length === features.size &&
+      new Set(routes).size === routes.length &&
+      routes.every((route) => inFolder(FEATURES, route) && features.has(featureOf(route))),
   ));
 }
