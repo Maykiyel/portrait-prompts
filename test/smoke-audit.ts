@@ -417,11 +417,12 @@ export function runAudit(): void {
       routes.every((route) => inFolder(FEATURES, route) && features.has(featureOf(route))),
   ));
 
-  // The one boundary above that this file does not hold itself: module cycles, which
-  // are the linter's to refuse. Everything above is asked of the sources in this
-  // process; this one is asked of the tool that guards every change after this, so
-  // the honest way to ask is to run the tool and read what it says rather than to
-  // re-implement the rule here and call that proof.
+  // The boundaries above that this file does not hold itself: module cycles, and the
+  // two ways of reaching across a layer. All three are the linter's to refuse.
+  // Everything else here is asked of the sources in this process; these are asked of
+  // the tool that guards every change after this, so the honest way to ask is to run
+  // the tool and read what it says rather than to re-implement the rules here and
+  // call that proof.
   //
   // The run is the one `pnpm lint` makes, from the repository root so the
   // configuration is found, and the assertion is on the rule name oxlint prints and
@@ -437,13 +438,12 @@ export function runAudit(): void {
   // clean run.
   const OXLINT = ["node_modules/oxlint/bin/oxlint", "-c", ".oxlintrc.json"];
   const CYCLE_RULE = "import(no-cycle)";
-  /** What the linter said, and whether any of it was the cycle rule naming itself. */
-  const lintSays = (): { exit: number | null; said: string; namedCycleRule: boolean } => {
+  /** Everything the linter said, and the status it left with. */
+  const lintSays = (): { exit: number | null; said: string } => {
     try {
-      const said = execFileSync(process.execPath, OXLINT, {
+      return { exit: 0, said: execFileSync(process.execPath, OXLINT, {
         cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-      });
-      return { exit: 0, said, namedCycleRule: said.includes(CYCLE_RULE) };
+      }) };
     } catch (err) {
       // A non-zero exit is the linter's verdict rather than a failure to run: what it
       // found is on the stream either way. A spawn that never happened has no status
@@ -452,11 +452,13 @@ export function runAudit(): void {
       const { status, stdout, stderr, message } = err as
         { status?: number | null; stdout?: string; stderr?: string; message?: string };
       const said = `${stdout ?? ""}${stderr ?? ""}`;
-      return {
-        exit: status ?? null, said: `${said}\n${message ?? ""}`, namedCycleRule: said.includes(CYCLE_RULE),
-      };
+      return { exit: status ?? null, said: `${said}\n${message ?? ""}` };
     }
   };
+  // Whether a run named one rule and not another. Every rule below is asserted
+  // through this, rather than by a field per rule, so the question asked is always
+  // the same one: did the linter say this, by this name.
+  const namedRule = (report: { said: string }, rule: string) => report.said.includes(rule);
   const speak = (report: { exit: number | null; said: string }) =>
     console.log(`      the linter exited ${report.exit} and said:\n      ${report.said.trim().replace(/\n/g, "\n      ")}`);
 
@@ -467,9 +469,9 @@ export function runAudit(): void {
   const asItStands = lintSays();
   results.push(check(
     "the browser's own tree lints clean with the cycle rule on: the run exits zero and names no cycle",
-    asItStands.exit === 0 && !asItStands.namedCycleRule,
+    asItStands.exit === 0 && !namedRule(asItStands, CYCLE_RULE),
   ));
-  if (asItStands.exit !== 0 || asItStands.namedCycleRule) speak(asItStands);
+  if (asItStands.exit !== 0 || namedRule(asItStands, CYCLE_RULE)) speak(asItStands);
 
   // And the rule can actually fail, which is the half of it that decides whether
   // there is a rule here at all. Two files in two of the browser's real layer
@@ -491,7 +493,72 @@ export function runAudit(): void {
   );
   results.push(check(
     "the cycle rule is not vacuous: a cycle planted between two of the browser's own folders turns it red by name",
-    plantedCycle.namedCycleRule,
+    namedRule(plantedCycle, CYCLE_RULE),
   ));
-  if (!plantedCycle.namedCycleRule) speak(plantedCycle);
+  if (!namedRule(plantedCycle, CYCLE_RULE)) speak(plantedCycle);
+
+  // The two import boundaries, which are the linter's as well. What is written in
+  // this file above is the audit's own reading of the sources; these are what the
+  // next contributor meets before CI rather than after, and a rule that only exists
+  // in a test is a rule that has never stopped anybody. So each one is asked the way
+  // the cycle rule is asked — run the tool, read the name it prints — and each is
+  // asked separately, because one working rule must not be able to stand in for a
+  // broken one.
+  //
+  // They ship as a unit, and the reason is that a cross-layer edge has two
+  // spellings. The restricted-pattern list has no exception for a path, only for a
+  // named binding, so "no feature stands on a sibling" cannot be one flat pattern:
+  // the same specifier is legal for the composition root, which loads every route,
+  // and illegal for a feature. The configuration scopes the pattern to its importer
+  // instead, which leaves the second spelling standing: `../prompts/...` names the
+  // same module and matches no pattern, so on its own the first rule refuses
+  // nothing. This codebase's own convention closes that — a feature names its
+  // siblings relatively or not at all — so the alias form can be banned outright for
+  // feature importers, and the relative-parent rule is the only thing standing
+  // between a `../` and a feature it has no business knowing about.
+  //
+  // Neither of the two checks below is a repeat of the claim above it. Those read
+  // the sources in this process and hold whatever the linter does; these run the
+  // tool and hold whatever the sources say. A file that satisfied one and not the
+  // other is the interesting case, and it is the one a reader of either alone
+  // cannot see.
+  const RESTRICTED_RULE = "eslint(no-restricted-imports)";
+  const PARENT_RULE = "import(no-relative-parent-imports)";
+
+  // A feature reaching a sibling feature by alias — the spelling every cross-folder
+  // edge in this app uses, and the one the restricted patterns are written against.
+  // It names a module that exists, so the fixture reads like the code it stands in
+  // for and the run is not being asked about a path it cannot resolve.
+  const plantedAcross = whilePlanted(
+    [{ path: join(repoRoot, FEATURES, "gallery", "restricted-import-probe.ts"),
+      contents: 'import { useCopied } from "@/features/prompts/copied-store";\nvoid useCopied;\n' }],
+    lintSays,
+  );
+  results.push(check(
+    "the restricted-import rule is not vacuous: a feature reaching a sibling by alias turns it red by name",
+    // The tree has to be green first, or this says nothing: a configuration that is
+    // red whatever anyone writes would leave the run naming the rule for the wrong
+    // reason, and one with the rule switched off would leave it saying nothing at
+    // all while still passing a check that only watched for the run going red.
+    asItStands.exit === 0 && !namedRule(asItStands, RESTRICTED_RULE) && !namedRule(asItStands, CYCLE_RULE) &&
+      namedRule(plantedAcross, RESTRICTED_RULE) && !namedRule(plantedAcross, PARENT_RULE),
+  ));
+  if (!namedRule(plantedAcross, RESTRICTED_RULE)) speak(plantedAcross);
+
+  // The same edge, spelled the other way. Nothing else about the fixture changes, so
+  // whatever catches this is catching the `../` and not the sibling. That the
+  // restricted-import rule stays quiet while this one speaks is the whole argument
+  // for shipping them together: the pattern is written against a specifier, and this
+  // specifier is not one it can see.
+  const plantedParent = whilePlanted(
+    [{ path: join(repoRoot, FEATURES, "gallery", "relative-parent-probe.ts"),
+      contents: 'import { useCopied } from "../prompts/copied-store";\nvoid useCopied;\n' }],
+    lintSays,
+  );
+  results.push(check(
+    "the relative-parent rule is not vacuous: the same edge spelled `../` turns it red by name, and the alias rule cannot see it",
+    asItStands.exit === 0 && !namedRule(asItStands, PARENT_RULE) && !namedRule(asItStands, CYCLE_RULE) &&
+      namedRule(plantedParent, PARENT_RULE) && !namedRule(plantedParent, RESTRICTED_RULE),
+  ));
+  if (!namedRule(plantedParent, PARENT_RULE)) speak(plantedParent);
 }
