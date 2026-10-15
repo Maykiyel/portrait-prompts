@@ -8,6 +8,7 @@
 // reach are both properties of everything at once. Anything that can
 // name one of the archive's private names, or pick up a filesystem
 // without a reason on record, fails the run.
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { check, repoRoot, results } from "./smoke-harness";
@@ -415,4 +416,82 @@ export function runAudit(): void {
       new Set(routes).size === routes.length &&
       routes.every((route) => inFolder(FEATURES, route) && features.has(featureOf(route))),
   ));
+
+  // The one boundary above that this file does not hold itself: module cycles, which
+  // are the linter's to refuse. Everything above is asked of the sources in this
+  // process; this one is asked of the tool that guards every change after this, so
+  // the honest way to ask is to run the tool and read what it says rather than to
+  // re-implement the rule here and call that proof.
+  //
+  // The run is the one `pnpm lint` makes, from the repository root so the
+  // configuration is found, and the assertion is on the rule name oxlint prints and
+  // on nothing else — no path, no line, no column. Anything narrower would be a
+  // claim about today's spelling of a file rather than about the rule.
+  //
+  // Note how the linter is spawned. On Windows `node_modules/.bin/oxlint` is a POSIX
+  // shell script rather than an executable, so asking for it by name fails in a way a
+  // linter that ran and found nothing does not — and the second of those two
+  // failures is the one that ships a rule which has never once said anything. The
+  // script is run through the node binary already in this process for that reason,
+  // and a spawn that did not happen is reported below as itself rather than as a
+  // clean run.
+  const OXLINT = ["node_modules/oxlint/bin/oxlint", "-c", ".oxlintrc.json"];
+  const CYCLE_RULE = "import(no-cycle)";
+  /** What the linter said, and whether any of it was the cycle rule naming itself. */
+  const lintSays = (): { exit: number | null; said: string; namedCycleRule: boolean } => {
+    try {
+      const said = execFileSync(process.execPath, OXLINT, {
+        cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      });
+      return { exit: 0, said, namedCycleRule: said.includes(CYCLE_RULE) };
+    } catch (err) {
+      // A non-zero exit is the linter's verdict rather than a failure to run: what it
+      // found is on the stream either way. A spawn that never happened has no status
+      // and no diagnostics, and is carried as itself so the checks below can tell the
+      // two apart instead of reading a missing linter as a clean tree.
+      const { status, stdout, stderr, message } = err as
+        { status?: number | null; stdout?: string; stderr?: string; message?: string };
+      const said = `${stdout ?? ""}${stderr ?? ""}`;
+      return {
+        exit: status ?? null, said: `${said}\n${message ?? ""}`, namedCycleRule: said.includes(CYCLE_RULE),
+      };
+    }
+  };
+  const speak = (report: { exit: number | null; said: string }) =>
+    console.log(`      the linter exited ${report.exit} and said:\n      ${report.said.trim().replace(/\n/g, "\n      ")}`);
+
+  // The tree as it stands, with nothing planted: the same command over the same
+  // files. This has to be green, or the check below would go on passing against a
+  // configuration that is red whatever anyone writes — a rule that has stopped
+  // meaning anything and still looks installed.
+  const asItStands = lintSays();
+  results.push(check(
+    "the browser's own tree lints clean with the cycle rule on: the run exits zero and names no cycle",
+    asItStands.exit === 0 && !asItStands.namedCycleRule,
+  ));
+  if (asItStands.exit !== 0 || asItStands.namedCycleRule) speak(asItStands);
+
+  // And the rule can actually fail, which is the half of it that decides whether
+  // there is a rule here at all. Two files in two of the browser's real layer
+  // folders — a shared lib and a feature — each reaching for the other by `@/`,
+  // the spelling every module in this app uses for a cross-folder edge. The fixture
+  // is in real folders on purpose: a pair planted in the root of web/src instead
+  // would sit above all four layers, where no module in this codebase lives, and
+  // would say nothing about the resolution path production code walks.
+  const plantedCycle = whilePlanted(
+    [
+      { path: join(repoRoot, WEB, "shared", "lib", "cycle-probe-a.ts"),
+        contents: 'import { probeB } from "@/features/overview/cycle-probe-b";\n' +
+          "export const probeA = (): string => probeB();\n" },
+      { path: join(repoRoot, WEB, "features", "overview", "cycle-probe-b.ts"),
+        contents: 'import { probeA } from "@/shared/lib/cycle-probe-a";\n' +
+          "export const probeB = (): string => probeA();\n" },
+    ],
+    lintSays,
+  );
+  results.push(check(
+    "the cycle rule is not vacuous: a cycle planted between two of the browser's own folders turns it red by name",
+    plantedCycle.namedCycleRule,
+  ));
+  if (!plantedCycle.namedCycleRule) speak(plantedCycle);
 }
