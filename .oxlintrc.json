@@ -26,6 +26,47 @@
     "react/only-export-components": "off",
     "import/no-unassigned-import": "off",
     "import/no-named-as-default-member": "off",
-    "import/no-cycle": "error"
-  }
+    "import/no-cycle": "error",
+    // The web app's layering is app -> features -> shared -> lib, and the two rules
+    // below are what hold it up rather than leaving it in the author's head. Neither
+    // is asked of the whole repository: the backend is Node, has no path aliases at
+    // all, and reaches every one of its neighbours relatively, which is correct
+    // there and a boundary violation here. Its layering is held by the audit instead,
+    // so the patterns are written against the browser's own alias and the relative
+    // rule is scoped to the browser's own folders.
+    //
+    // Both patterns are alias-prefixed, which is what keeps the two folders called
+    // shared from ever colliding. `@/shared/**` is the browser library under web/src
+    // and `@shared/**` is the HTTP contract types at the repository root, and they
+    // are different strings, so no pattern can name both. A bare `**/shared/**`
+    // would.
+    "no-restricted-imports": ["error", { "patterns": ["@/app/**", "@/features/**"] }]
+  },
+  "overrides": [
+    {
+      // The composition root is the one layer that may stand on the features
+      // beneath it, and the one layer nothing may stand on. Directional, not a
+      // total order, which is exactly why this is an override and not a blanket
+      // ban: the router's five lazy route imports are the reason the feature
+      // pattern can be switched on at all.
+      "files": ["web/src/app/**"],
+      "rules": { "no-restricted-imports": ["error", { "patterns": ["@/app/**"] }] }
+    },
+    {
+      // The other spelling of the same edge, and the reason the rule above is not
+      // decorative on its own. A restricted pattern has no exception for a path,
+      // only for a named binding, so "no feature stands on a sibling" cannot be one
+      // flat rule — the same specifier is legal here, where every route is loaded
+      // lazily, and illegal below. The pattern above is scoped to its importer for
+      // that reason, and what the scoping cannot reach is `../prompts/...`: it names
+      // the same module and matches no pattern at all.
+      //
+      // In this app a module in the same folder is named relatively and nothing under
+      // web/src is named `../`, so the rule costs nothing real and closes the door. It
+      // ships with the rule above rather than after it — on its own the
+      // restricted-import rule refuses nothing and reads as installed.
+      "files": ["web/src/**"],
+      "rules": { "import/no-relative-parent-imports": "error" }
+    }
+  ]
 }
