@@ -345,6 +345,21 @@ export function runAudit(): void {
       : spec.startsWith(".") ? repoPath(join(repoRoot, dirname(from), spec))
       : undefined;
   const inside = (file: string, folder: string) => file === folder || file.startsWith(`${folder}/`);
+  // The two edges the rest of this section refuses, written once and planted
+  // twice. Each of them is asked twice over — once of the sources in this
+  // process, and once of the linter further down — and the two asks are not the
+  // same claim, so the fixture for each is one edge rather than two spellings
+  // that have to be kept in step by hand. What the edge is named matters for the
+  // same reason the linter's does: a fixture pointing at a module that is no
+  // longer there is asking about a path that cannot resolve, which is a weaker
+  // question than the one the edge deserves.
+  //
+  // Both name a module that is still in the folder they reach into. The store
+  // was the thing below reached up for until it moved to the shared layer, and a
+  // fixture still spelling `@/app/settings-store` would be proving the rule can
+  // be satisfied by a path that does not exist.
+  const UPWARD_EDGE = 'import { ThemeSync } from "@/app/theme-sync";\nvoid ThemeSync;\n';
+  const SIBLING_EDGE = 'import { useCopied } from "@/features/prompts/copied-store";\nvoid useCopied;\n';
   // The root is the only layer allowed to stand on the features beneath it, and
   // the only layer anything may not stand on. Every file in the browser is asked,
   // so a file added to a layer tomorrow is covered by landing in it.
@@ -352,18 +367,17 @@ export function runAudit(): void {
     [...sources].filter(([f]) => inFolder(WEB, f) && !inFolder(APP, f))
       .filter(([f, s]) => specifiers(s).some((spec) => inside(named(f, spec) ?? "", APP)))
       .map(([f]) => `${f} reaches up into the composition root`);
-  const upward = reachesUp(sourceText);
-  results.push(check("nothing below the composition root reaches up into it", upward.length === 0));
-  for (const line of upward) console.log(`      ${line}`);
+  const upReachers = reachesUp(sourceText);
+  results.push(check("nothing below the composition root reaches up into it", upReachers.length === 0));
+  for (const line of upReachers) console.log(`      ${line}`);
 
-  // And it is not vacuous: a shared primitive reaching back up for the store is
+  // And it is not vacuous: a shared component reaching back up into the root is
   // the exact edge this move removed, so planting one has to turn the claim red,
   // and the file must not outlive the probe.
   const plantedUp = join(repoRoot, WEB, "shared", "components", "reach-around-app.ts");
-  const PLANTED_UP = 'import { useSettings } from "@/app/settings-store";\nvoid useSettings;\n';
-  const withUp = whilePlanted([{ path: plantedUp, contents: PLANTED_UP }], readAll);
+  const withUp = whilePlanted([{ path: plantedUp, contents: UPWARD_EDGE }], readAll);
   results.push(check(
-    "the no-upward-reach claim is not vacuous: a shared primitive that reaches back up turns it red",
+    "the no-upward-reach claim is not vacuous: a shared component that reaches back up turns it red",
     withUp.has(repoPath(plantedUp)) &&
       reachesUp(withUp).includes(`${repoPath(plantedUp)} reaches up into the composition root`) &&
       !reachesUp(sourceText).includes(`${repoPath(plantedUp)} reaches up into the composition root`),
@@ -384,13 +398,12 @@ export function runAudit(): void {
         return target !== undefined && inFolder(FEATURES, target) && featureOf(target) !== featureOf(f);
       }))
       .map(([f]) => `${f} imports another feature`);
-  const sideways = reachesFeature(sourceText);
-  results.push(check("no feature stands on a sibling feature", sideways.length === 0));
-  for (const line of sideways) console.log(`      ${line}`);
+  const sidewaysReachers = reachesFeature(sourceText);
+  results.push(check("no feature stands on a sibling feature", sidewaysReachers.length === 0));
+  for (const line of sidewaysReachers) console.log(`      ${line}`);
 
   const plantedSideways = join(repoRoot, FEATURES, "gallery", "reach-around-feature.ts");
-  const PLANTED_SIDEWAYS = 'import { useCopied } from "@/features/prompts/copied-store";\nvoid useCopied;\n';
-  const withSideways = whilePlanted([{ path: plantedSideways, contents: PLANTED_SIDEWAYS }], readAll);
+  const withSideways = whilePlanted([{ path: plantedSideways, contents: SIBLING_EDGE }], readAll);
   results.push(check(
     "the no-sibling-feature claim is not vacuous: a feature that reaches sideways turns it red",
     withSideways.has(repoPath(plantedSideways)) &&
@@ -404,17 +417,41 @@ export function runAudit(): void {
   // sixth one is covered by landing in the folder rather than by being added to
   // a list here — and a route that stopped being lazy would leave this with too
   // few imports rather than with a claim that quietly went quiet.
-  const features = new Set(everyFileIn(FEATURES).map(featureOf));
   const ROUTER = `${APP}/router.tsx`;
   const lazyRoutes = (sources: Map<string, string>): string[] =>
     [...code(sources.get(ROUTER) ?? "").matchAll(/lazy\(\s*\(\s*\)\s*=>\s*import\(\s*["'](@\/features\/[^"']+)["']/g)]
       .map((m) => named(ROUTER, m[1]) ?? "");
-  const routes = lazyRoutes(sourceText);
+  // Every feature on disk has exactly one lazy route pointing into it, and every
+  // route points at a feature that exists. Asked of a tree rather than of this
+  // one, so the probe below can ask it of a tree with a sixth feature in it.
+  const routesEveryFeature = (sources: Map<string, string>) => {
+    const features = new Set(everyFileIn(FEATURES).map(featureOf));
+    const routes = lazyRoutes(sources);
+    return features.size > 0 && routes.length === features.size &&
+      new Set(routes).size === routes.length &&
+      routes.every((route) => inFolder(FEATURES, route) && features.has(featureOf(route)));
+  };
   results.push(check(
     "the composition root loads every feature route lazily, one chunk each",
-    features.size > 0 && routes.length === features.size &&
-      new Set(routes).size === routes.length &&
-      routes.every((route) => inFolder(FEATURES, route) && features.has(featureOf(route))),
+    routesEveryFeature(sourceText),
+  ));
+
+  // And it is not vacuous, which is the whole question here: the two counts in
+  // that claim are equal today, and two equal numbers are exactly what a check
+  // that compares nothing also looks like. A sixth feature folder with a page in
+  // it and no route pointing at it is the failure the claim exists to catch — a
+  // page nobody can navigate to — and it turns the claim red, while the folder
+  // and the file do not outlive the probe. The verdict is taken inside the probe,
+  // because the features are read off disk and the disk is where the plant is.
+  const everyFeatureRouted = routesEveryFeature(sourceText);
+  const withUnrouted = whilePlanted(
+    [{ path: join(repoRoot, FEATURES, "reach-around-route", "reach-around-page.ts"),
+      contents: "export const ReachAroundPage = (): null => null;\n" }],
+    () => routesEveryFeature(readAll()),
+  );
+  results.push(check(
+    "the lazy-route claim is not vacuous: a feature with no route of its own turns it red",
+    everyFeatureRouted && !withUnrouted,
   ));
 
   // The boundaries above that this file does not hold itself: module cycles, and the
@@ -424,10 +461,28 @@ export function runAudit(): void {
   // the tool and read what it says rather than to re-implement the rules here and
   // call that proof.
   //
-  // The run is the one `pnpm lint` makes, from the repository root so the
-  // configuration is found, and the assertion is on the rule name oxlint prints and
-  // on nothing else — no path, no line, no column. Anything narrower would be a
-  // claim about today's spelling of a file rather than about the rule.
+  // Why both, when reachesUp and reachesFeature above already read the same imports
+  // and hold the same boundaries. Because they fail in opposite directions, and a
+  // reader of either half cannot see the other half's failure. The claims above hold
+  // whatever the configuration says: take every rule out of it and they still pass,
+  // because a browser with no upward reach is a browser with no upward reach. The
+  // rules hold whatever the claims do, which is the reason these fixtures exist — a
+  // linter that is not installed, not running, or reading a configuration it cannot
+  // parse prints nothing and exits for reasons of its own, and a check that watches
+  // only for red would read that silence as a clean tree. Neither half can stand in
+  // for the other, so both stay, and the fixtures are what make the tool's half
+  // load-bearing rather than decorative.
+  //
+  // The assertion is on the rule name oxlint prints and on nothing else — no path,
+  // no line, no column. Anything narrower would be a claim about today's spelling of
+  // a file rather than about the rule.
+  //
+  // On what "the run" is. It is oxlint over the whole repository, from the root so
+  // the configuration is found, with no path argument for the reason the check below
+  // says out loud. It is not the argv `pnpm lint` passes — that script is a bare
+  // `oxlint`, which finds the same `.oxlintrc.json` on its own, so the two runs agree
+  // today by coincidence rather than by construction. The binary is named here
+  // rather than shelled out to because of what a shell would do to it:
   //
   // Note how the linter is spawned. On Windows `node_modules/.bin/oxlint` is a POSIX
   // shell script rather than an executable, so asking for it by name fails in a way a
@@ -436,12 +491,12 @@ export function runAudit(): void {
   // script is run through the node binary already in this process for that reason,
   // and a spawn that did not happen is reported below as itself rather than as a
   // clean run.
-  const OXLINT = ["node_modules/oxlint/bin/oxlint", "-c", ".oxlintrc.json"];
+  const OXLINT_ARGV = ["node_modules/oxlint/bin/oxlint", "-c", ".oxlintrc.json"];
   const CYCLE_RULE = "import(no-cycle)";
   /** Everything the linter said, and the status it left with. */
   const lintSays = (): { exit: number | null; said: string } => {
     try {
-      return { exit: 0, said: execFileSync(process.execPath, OXLINT, {
+      return { exit: 0, said: execFileSync(process.execPath, OXLINT_ARGV, {
         cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       }) };
     } catch (err) {
@@ -463,12 +518,20 @@ export function runAudit(): void {
     console.log(`      the linter exited ${report.exit} and said:\n      ${report.said.trim().replace(/\n/g, "\n      ")}`);
 
   // The tree as it stands, with nothing planted: the same command over the same
-  // files. This has to be green, or the check below would go on passing against a
+  // files. It has to be green, or the check below would go on passing against a
   // configuration that is red whatever anyone writes — a rule that has stopped
   // meaning anything and still looks installed.
+  //
+  // The name says what is actually asked, which is not the browser's own tree.
+  // There is no path argument, so the run covers every folder in the repository
+  // — the browser's four layers and the backend's core, server and cli alike —
+  // and the whole of it has to be clean. That is wider than the browser, and it
+  // is also the assertion every fixture below leans on: each one reads this same
+  // run to prove its rule was quiet before the plant and not because the tree
+  // was already red.
   const asItStands = lintSays();
   results.push(check(
-    "the browser's own tree lints clean with the cycle rule on: the run exits zero and names no cycle",
+    "the whole repository lints clean with the cycle rule on: the run exits zero and names no cycle",
     asItStands.exit === 0 && !namedRule(asItStands, CYCLE_RULE),
   ));
   if (asItStands.exit !== 0 || namedRule(asItStands, CYCLE_RULE)) speak(asItStands);
@@ -517,13 +580,45 @@ export function runAudit(): void {
   // feature importers, and the relative-parent rule is the only thing standing
   // between a `../` and a feature it has no business knowing about.
   //
-  // Neither of the two checks below is a repeat of the claim above it. Those read
-  // the sources in this process and hold whatever the linter does; these run the
-  // tool and hold whatever the sources say. A file that satisfied one and not the
-  // other is the interesting case, and it is the one a reader of either alone
-  // cannot see.
+  // The three of them, each asked separately, because one working rule must not be
+  // able to stand in for two broken ones. There are three patterns in the
+  // configuration and the first of them was the one with nothing of its own here:
+  // `@/app/**` was proved only by the audit's own claim further up, which reads the
+  // sources rather than the rules. That is a different mechanism, and it cannot tell
+  // a rule that refuses the edge from a rule that is not running at all — the same
+  // shape of blind spot this file has been guarding against since its first probe,
+  // one layer down. So the upward reach is now asked of the tool as well, by name.
   const RESTRICTED_RULE = "eslint(no-restricted-imports)";
   const PARENT_RULE = "import(no-relative-parent-imports)";
+  // Every fixture below asserts this first: the run has to have been green with
+  // nothing planted, or a rule naming itself in the output says nothing about
+  // whether the rule is live. A configuration that is red whatever anyone writes
+  // would leave the run naming the rule for the wrong reason, and one with the rule
+  // switched off would leave it saying nothing at all while still passing a check
+  // that only watched for the run going red.
+  const greenBefore = (report: { exit: number | null; said: string }) =>
+    report.exit === 0 && !namedRule(report, RESTRICTED_RULE) && !namedRule(report, PARENT_RULE) &&
+      !namedRule(report, CYCLE_RULE);
+
+  // Below the composition root, reaching up into it — the direction the store move
+  // closed, and the one the override cannot weaken, since that narrows the pattern
+  // list for the root's own importers and every other importer keeps the flat
+  // `@/app/**`. It is planted below the root rather than in it: a module of the root
+  // reaching into its own folder is legal, so a fixture there would prove nothing.
+  const plantedUpward = whilePlanted(
+    [{ path: join(repoRoot, WEB, "shared", "components", "restricted-upward-probe.ts"),
+      contents: UPWARD_EDGE }],
+    lintSays,
+  );
+  results.push(check(
+    "the upward-restriction pattern is not vacuous: a shared component reaching up into the root turns it red by name",
+    greenBefore(asItStands) && namedRule(plantedUpward, RESTRICTED_RULE) &&
+      // The other two staying quiet is what says the alias pattern is the thing
+      // doing it. An upward reach can also be spelled `../../app/...`, which this
+      // specifier is not, and a cycle would be a different claim entirely.
+      !namedRule(plantedUpward, PARENT_RULE) && !namedRule(plantedUpward, CYCLE_RULE),
+  ));
+  if (!namedRule(plantedUpward, RESTRICTED_RULE)) speak(plantedUpward);
 
   // A feature reaching a sibling feature by alias — the spelling every cross-folder
   // edge in this app uses, and the one the restricted patterns are written against.
@@ -531,17 +626,12 @@ export function runAudit(): void {
   // for and the run is not being asked about a path it cannot resolve.
   const plantedAcross = whilePlanted(
     [{ path: join(repoRoot, FEATURES, "gallery", "restricted-import-probe.ts"),
-      contents: 'import { useCopied } from "@/features/prompts/copied-store";\nvoid useCopied;\n' }],
+      contents: SIBLING_EDGE }],
     lintSays,
   );
   results.push(check(
     "the restricted-import rule is not vacuous: a feature reaching a sibling by alias turns it red by name",
-    // The tree has to be green first, or this says nothing: a configuration that is
-    // red whatever anyone writes would leave the run naming the rule for the wrong
-    // reason, and one with the rule switched off would leave it saying nothing at
-    // all while still passing a check that only watched for the run going red.
-    asItStands.exit === 0 && !namedRule(asItStands, RESTRICTED_RULE) && !namedRule(asItStands, CYCLE_RULE) &&
-      namedRule(plantedAcross, RESTRICTED_RULE) && !namedRule(plantedAcross, PARENT_RULE),
+    greenBefore(asItStands) && namedRule(plantedAcross, RESTRICTED_RULE) && !namedRule(plantedAcross, PARENT_RULE),
   ));
   if (!namedRule(plantedAcross, RESTRICTED_RULE)) speak(plantedAcross);
 
@@ -557,8 +647,7 @@ export function runAudit(): void {
   );
   results.push(check(
     "the relative-parent rule is not vacuous: the same edge spelled `../` turns it red by name, and the alias rule cannot see it",
-    asItStands.exit === 0 && !namedRule(asItStands, PARENT_RULE) && !namedRule(asItStands, CYCLE_RULE) &&
-      namedRule(plantedParent, PARENT_RULE) && !namedRule(plantedParent, RESTRICTED_RULE),
+    greenBefore(asItStands) && namedRule(plantedParent, PARENT_RULE) && !namedRule(plantedParent, RESTRICTED_RULE),
   ));
   if (!namedRule(plantedParent, PARENT_RULE)) speak(plantedParent);
 }

@@ -26,14 +26,28 @@
     "react/only-export-components": "off",
     "import/no-unassigned-import": "off",
     "import/no-named-as-default-member": "off",
+    // The web app's layering is app -> features -> shared -> lib, and the two import
+    // rules further down are what hold it up rather than leaving it in the author's
+    // head. The pair is asked of every file in the repository, and what keeps it off
+    // the backend is the spelling rather than the scope: the backend is Node, has no
+    // path aliases at all, and reaches every one of its neighbours relatively, which
+    // is correct there and a boundary violation here. No `@/` specifier exists to
+    // match. Its layering is held by the audit instead, and the relative-parent rule
+    // below is the one of the three genuinely scoped — to the browser's own folders,
+    // because there the rule has something to say and the backend's relative imports
+    // are the house style rather than an escape hatch.
+    //
+    // One blind spot of that rule is recorded here rather than left for the next reader
+    // to meet as a fixture that quietly stopped firing. It resolves the browser's edges
+    // through the `@/` alias, and a module placed directly in `web/src/` — above all
+    // four layers, where this codebase keeps no modules at all — has no alias to resolve
+    // from, so a cycle through one is not seen. Nothing is affected today: `web/src/`
+    // holds no TypeScript, only index.css. Measured across every pair of the browser's
+    // ten real folders (app, lib, shared/lib, shared/components, shared/components/ui
+    // and the five features), 45 of 45 fire. This rule is asked of the whole
+    // repository, browser and backend alike, and that is deliberate: a cycle is a
+    // cycle wherever it is written.
     "import/no-cycle": "error",
-    // The web app's layering is app -> features -> shared -> lib, and the two rules
-    // below are what hold it up rather than leaving it in the author's head. Neither
-    // is asked of the whole repository: the backend is Node, has no path aliases at
-    // all, and reaches every one of its neighbours relatively, which is correct
-    // there and a boundary violation here. Its layering is held by the audit instead,
-    // so the patterns are written against the browser's own alias and the relative
-    // rule is scoped to the browser's own folders.
     //
     // Both patterns are alias-prefixed, which is what keeps the two folders called
     // shared from ever colliding. `@/shared/**` is the browser library under web/src
