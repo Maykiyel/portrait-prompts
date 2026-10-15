@@ -7,8 +7,8 @@ import { PageHeader } from "@/shared/components/page-header";
 import { QueryError } from "@/shared/components/query-error";
 import { useImages, thumbUrl } from "@/shared/lib/frames-api";
 import { useAddPrompts } from "@/shared/lib/prompts-api";
+import { useSettings } from "@/shared/lib/settings-store";
 import { useStatus } from "@/shared/lib/status-api";
-import { useSettings } from "@/app/settings-store";
 
 export function Overview() {
   const status = useStatus();

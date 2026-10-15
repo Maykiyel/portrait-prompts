@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useSettings } from "./settings-store";
+import { useSettings } from "@/shared/lib/settings-store";
 
 /** Keeps the `dark` class on <html> in step with the saved theme. */
 export function ThemeSync() {
