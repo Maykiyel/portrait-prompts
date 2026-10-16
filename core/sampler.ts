@@ -152,6 +152,8 @@ export const detailPools: Record<string, string[]> = {
 export const derivedPlaceholders = ["features"] as const;
 
 export const MAX_DETAILS = 3;
+/** Share of portraits that get two ethnicities, as in "Filipino and Brazilian". */
+export const MIX_RATE = 0.25;
 export const NO_DETAILS = "no prominent additional marks or accessories";
 const MIN_AGE_FOR_AGE_DETAIL = 30;
 const MAX_AGE_FOR_ACNE = 45;
@@ -191,6 +193,13 @@ function pickDetails(r: () => number, v: Record<string, string>): { category: st
     .map((k) => ({ category: k, text: pick(r, detailPools[k].filter((d) => fits(k, d, v))) }));
 }
 
+/** Usually one ethnicity. With chance MIX_RATE a second, different one, in either order. */
+function pickEthnicities(r: () => number, first: string): string[] {
+  if (r() >= MIX_RATE) return [first];
+  const second = pick(r, pools.ethnicity.filter((e) => e !== first));
+  return r() < 0.5 ? [first, second] : [second, first];
+}
+
 /** Everything one seed and salt decide: the filled placeholders and the optional details behind {features}. */
 export function samplePortrait(seed: number, salt: string) {
   const r = mulberry32(salt ? hash32(`${salt}:${seed}`) : seed);
@@ -199,7 +208,10 @@ export function samplePortrait(seed: number, salt: string) {
   if (values.gender !== "man") values.facialHair = "";
   const details = pickDetails(r, values);
   values.features = formatDetails(details.map((d) => d.text));
-  return { values, details };
+  // Drawn last, so mixing never changes any other trait of the portrait.
+  const ethnicities = pickEthnicities(r, values.ethnicity);
+  values.ethnicity = ethnicities.join(" and ");
+  return { values, details, ethnicities };
 }
 
 /** Same template, seed and salt always give the same prompt. The salt is required: there is no ambient one to fall back on. */

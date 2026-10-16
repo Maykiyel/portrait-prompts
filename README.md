@@ -100,7 +100,7 @@ Every prompt comes from a seed. A counter in `out/cursor.json` hands seeds out i
 
 ## Customize the prompts
 
-- `template.txt` is the prompt. The first line is a version tag like `# portrait-v4`. It is stripped before use and saved in the manifest.
+- `template.txt` is the prompt. The first line is a version tag like `# portrait-v5`. It is stripped before use and saved in the manifest.
 - `negative.txt` is the list of things to avoid.
 - `core/sampler.ts` holds the attribute pools. Each placeholder in the template, like `{hair}`, matches a pool.
 
@@ -112,6 +112,8 @@ Two rules keep your dataset consistent.
 Each pool holds 10 to 30 entries, except gender, which has 3. Pools that change the face matter most, because they decide who the person is. These are age, gender, ethnicity, skin, eye color, eye shape, face shape, nose, lips, eyebrows, hair, facial hair and the optional details. Wardrobe, background, lighting, pose and expression only change the surroundings and mood. Facial hair applies to men only, and its pool has several empty entries so about half of them are clean-shaven.
 
 The optional details live in `detailPools` and fill the `{features}` placeholder. They are skin details, distinctive marks, facial details, accessories and age details. Each portrait gets zero to three of them, at most one per category, so a portrait can have freckles and glasses but never two accessories. With none selected the prompt says `no prominent additional marks or accessories`. A few rules keep the result coherent. Age details need an age of 30 or more, acne marks need 45 or less, freckles are skipped for freckled skin, and the asymmetry detail is skipped for asymmetrical lips. The details are drawn after all the pools, from the same seeded random source, so a seed and salt still give one prompt.
+
+About a quarter of portraits get two ethnicities, as in `of Filipino and Brazilian background`. The share is `MIX_RATE` in `core/sampler.ts`. The second ethnicity is drawn last, so mixing changes only the ethnicity text and no other trait.
 
 ## Command line
 

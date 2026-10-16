@@ -19,7 +19,7 @@ import { generateImages, parseArgs } from "../cli/generate";
 import { importImages } from "../cli/import-images";
 import { openOutputFolder, seedLabel, type FileForImport } from "../core/output-folder";
 import {
-  buildPrompt, composePrompt, derivedPlaceholders, detailPools, formatDetails, MAX_DETAILS, NO_DETAILS, pools,
+  buildPrompt, composePrompt, derivedPlaceholders, detailPools, formatDetails, MAX_DETAILS, MIX_RATE, NO_DETAILS, pools,
   samplePortrait,
 } from "../core/sampler";
 import { createApp, STATUS_BY_CODE } from "../server/index";
@@ -506,9 +506,9 @@ results.push(check("a caller supplies the salt, not the environment", buildPromp
 delete process.env.SEED_SALT;
 const salted = Array.from({ length: 50 }, (_, i) => i + 1).filter((n) => buildPrompt(template, n, "x") !== buildPrompt(template, n, "")).length;
 results.push(check("salt changes almost every seed", salted >= 48));
-// Unsalted Seed 9's Prompt under portrait-v4: preserves the plain-seed PRNG path. Re-pin it when a pool or the template changes.
+// Unsalted Seed 9's Prompt under portrait-v5: preserves the plain-seed PRNG path. Re-pin it when a pool or the template changes.
 const plain = createHash("sha256").update(buildPrompt(template, 9, "")).digest("hex");
-results.push(check("no salt matches the plain seed", plain === "61e858824e2832e86a87ee762b5a49e079103e8d38850ffbdb1feed16c328e98"));
+results.push(check("no salt matches the plain seed", plain === "83c1038813244cf36ba7d35806d475e14f665d54fc56f4ebd76eb1f33e0003a9"));
 const guardDir = "out-smoke4";
 rmSync(guardDir, { recursive: true, force: true });
 openOutputFolder(guardDir, "").claimSeeds(2); // started with no salt
@@ -622,6 +622,28 @@ results.push(check(
   composePrompt(template, negative, 5, "a", true) ===
     `Generate an image. ${buildPrompt(template, 5, "a").trim()}\n\nAvoid: ${negative}.` &&
     composePrompt(template, negative, 5, "a") === `Generate an image. ${buildPrompt(template, 5, "a").trim()}`,
+));
+const mixed = detailSamples.filter((d) => d.ethnicities.length === 2);
+results.push(check(
+  "about a quarter of portraits mix two ethnicities",
+  mixed.length / detailSamples.length > MIX_RATE - 0.05 && mixed.length / detailSamples.length < MIX_RATE + 0.05,
+));
+results.push(check(
+  "a mix names two different ethnicities from the pool, and a single one is a plain pool entry",
+  detailSamples.every((d) =>
+    d.ethnicities.length >= 1 && d.ethnicities.length <= 2 &&
+    d.ethnicities.every((e) => pools.ethnicity.includes(e)) &&
+    new Set(d.ethnicities).size === d.ethnicities.length &&
+    d.values.ethnicity === d.ethnicities.join(" and ")),
+));
+results.push(check(
+  "both orders of a mix occur",
+  mixed.some((d) => pools.ethnicity.indexOf(d.ethnicities[0]) < pools.ethnicity.indexOf(d.ethnicities[1])) &&
+    mixed.some((d) => pools.ethnicity.indexOf(d.ethnicities[0]) > pools.ethnicity.indexOf(d.ethnicities[1])),
+));
+results.push(check(
+  "a mix reads naturally in the finished prompt",
+  detailSamples.slice(0, 300).every((d, i) => buildPrompt(template, i + 1, "d").includes(`of ${d.values.ethnicity} background`)),
 ));
 const versionTag = promptFiles().version;
 results.push(check("the template version was bumped past portrait-v3", /^portrait-v(\d+)$/.test(versionTag) && Number(versionTag.slice(10)) >= 4));
