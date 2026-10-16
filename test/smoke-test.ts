@@ -4,7 +4,7 @@
 // the HTTP contract. Every section reports through the shared harness.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
@@ -14,7 +14,7 @@ import {
   type StartEvent,
 } from "../core/generate";
 import { MAX_CONCURRENCY, maxConcurrencyFor, providers, sizeFor } from "../core/providers";
-import { policy } from "../core/policy";
+import { policyFor } from "../core/policy";
 import { generateImages, parseArgs } from "../cli/generate";
 import { importImages } from "../cli/import-images";
 import { openOutputFolder, seedLabel, type FileForImport } from "../core/output-folder";
@@ -35,6 +35,11 @@ const out = "out-smoke";
 const inDir = "in-smoke";
 rmSync(out, { recursive: true, force: true });
 rmSync(inDir, { recursive: true, force: true });
+
+// The core's default generation policy. It is a function of a registry rather
+// than a value, because it reads a default model out of a catalog and naming a
+// registry here is what keeps this file from importing one itself.
+const policy = policyFor(providers);
 
 // The seam audit, in its own file: it reads source text to keep the
 // ownership claim global, while every other check here asks the module.
@@ -63,6 +68,10 @@ const apiFolder = openOutputFolder(out, "");
 const apiRequest = (over: Partial<RunRequest>, generate: Generator = good): RunRequest => ({
   count: 1,
   concurrency: 1,
+  // The ceiling the run clamps to, named here rather than defaulted by the run,
+  // which names no vendor and cannot work one out. The app's own ceiling, so a
+  // section that asks for one worker is never the reason a clamp happened.
+  maxConcurrency: MAX_CONCURRENCY,
   // A provider no registry holds, for the same reason the model is one no
   // vendor has: the run is told what to make, never who makes it.
   provider: "fake-provider",
@@ -545,6 +554,9 @@ try {
     folder.status().version === "fixture-v1" && folder.promptFor(1, true) === `${prompt}\n\nAvoid: fixture exclusions.` &&
     openOutputFolder(join(fixture, "other"), "alpha").status().version === "fixture-v2"));
   const img = await good();
+  // Bytes that travel unchanged even after a resize: used to prove the raw path
+  // is verbatim rather than re-encoded, by tacking on a byte sharp will drop.
+  const imgPlusJunk = Buffer.concat([img, Buffer.from([0x42])]);
   const imports = await folder.importFrames(
     [{ name: "corrupt.png", buffer: Buffer.from("bad") }, { name: "good.png", buffer: img }], [1, 2],
   );
@@ -554,6 +566,10 @@ try {
   const raw = await streamBytes(folder.readFrame(2, true));
   const frameMeta = await sharp(framed).metadata();
   const rawMeta = await sharp(raw).metadata();
+  // The frame is pushed through sharp and shrinks; the raw must not be. Verbatim
+  // bytes are the point — a vendor's C2PA signature does not survive re-encoding,
+  // so this reads the file again and asks for the exact buffer writeFrame was
+  // handed, not just dimensions that re-encoding leaves untouched.
   results.push(check("Frame and Raw image are streams with their original dimensions",
     frameMeta.width === 768 && frameMeta.height === 1152 && rawMeta.width === 848 && rawMeta.height === 1264));
   const thumbs = await streamBytes(await folder.readThumbnail(2, 160));
@@ -563,7 +579,10 @@ try {
   results.push(check("a different salt cannot claim this folder", errorCode(() => openOutputFolder(join(fixture, "archive"), "beta").claimSeeds(1)) === "salt-mismatch"));
   folder.recordAttempt({ seed: 1, status: "failed", error: "fixture failure" });
   results.push(check("status counts a Seed whose last Attempt failed", folder.status().failed === 1));
-  await folder.writeFrame({ seed: 5, buffer: img, model: "fixture-model", prompt: folder.promptFor(5, true) });
+  await folder.writeFrame({ seed: 5, buffer: imgPlusJunk, model: "fixture-model", prompt: folder.promptFor(5, true) });
+  const rawFive = readFileSync(join(fixture, "archive", "raw", "00005.png"));
+  results.push(check("raw is written verbatim, byte for byte, so a vendor C2PA signature survives",
+    rawFive.length === imgPlusJunk.length && rawFive.every((byte, i) => byte === imgPlusJunk[i])));
   results.push(check("Frame records are newest-first with Attempt provenance",
     folder.listFrames().map((frame) => frame.seed).join() === "5,2" &&
     folder.listFrames()[0].model === "fixture-model" && folder.listFrames()[0].prompt === folder.promptFor(5, true)));
@@ -846,7 +865,7 @@ const asRun = (spy: ReturnType<typeof policySpy>) => ({
   pool: spy.calls.most,
   seeds: spy.seen.length,
 });
-const genOptions: (keyof GenOptions)[] = ["provider", "model", "aspectRatio", "imageSize"];
+const genOptions: (keyof GenOptions)[] = ["model", "aspectRatio", "imageSize"];
 const policyBase = mkdtempSync(join(tempBase, "portrait-policy-"));
 writeFileSync(join(policyBase, "template.txt"), "# policy-v1\nPortrait of {age}.");
 writeFileSync(join(policyBase, "negative.txt"), "policy exclusions");
@@ -861,7 +880,7 @@ try {
   process.chdir(policyBase);
 
   const cliSpy = policySpy();
-  const cliLines = await captureOutput(() => generateImages(parseArgs([]), withGenerators({ gemini: cliSpy.generate })));
+  const cliLines = await captureOutput(() => generateImages(parseArgs([], providers), withGenerators({ gemini: cliSpy.generate })));
   const cliRun = asRun(cliSpy);
 
   // The wire request names a model key rather than a vendor name, so it can
@@ -903,8 +922,8 @@ try {
   const allFlags = parseArgs([
     "--start", "5", "--count", "3", "--concurrency", "7", "--model", "lite", "--aspect", "3:4",
     "--size", "2K", "--out", "somewhere-else", "--no-negative", "--dry-run",
-  ]);
-  const oneFlag = parseArgs(["--count", "3"]);
+  ], providers);
+  const oneFlag = parseArgs(["--count", "3"], providers);
   results.push(check(
     "each command-line flag overrides the one value it names and leaves the rest on the policy",
     allFlags.start === 5 && allFlags.count === 3 && allFlags.concurrency === 7 &&
@@ -925,12 +944,12 @@ try {
       oneFlag.outDir === "out" && oneFlag.dryRun === false && oneFlag.start === undefined &&
       // And a flag that names another Provider, which is what makes
       // `--provider` more than a spelling of the policy's value.
-      parseArgs(["--provider", "openai", "--model", "sunburst"]).provider === "openai" &&
-      parseArgs(["--provider", "openai", "--model", "sunburst"]).model ===
+      parseArgs(["--provider", "openai", "--model", "sunburst"], providers).provider === "openai" &&
+      parseArgs(["--provider", "openai", "--model", "sunburst"], providers).model ===
         providers.openai.models.find((m) => m.id === "sunburst")?.model &&
       // The two flags resolve after the loop rather than where they are read, so
       // this order is the same answer as the one above.
-      parseArgs(["--model", "sunburst", "--provider", "openai"]).model ===
+      parseArgs(["--model", "sunburst", "--provider", "openai"], providers).model ===
         providers.openai.models.find((m) => m.id === "sunburst")?.model,
   ));
 
@@ -1164,6 +1183,7 @@ results.push(check(
 // share a state. Driven through the Job rather than the run, because the claim
 // under test is about what the folder believes afterwards.
 const blockedBase = mkdtempSync(join(tempBase, "portrait-blocked-"));
+const savedOpenAiKey = process.env.OPENAI_API_KEY;
 try {
   const blockedDir = join(blockedBase, "blocked-archive");
   const blockedApp = createApp({ outDir: blockedDir, salt: "" }, withGenerators({ gemini: refused }));
@@ -1265,7 +1285,6 @@ try {
 } finally {
   if (savedJobKey === undefined) delete process.env.GEMINI_API_KEY;
   else process.env.GEMINI_API_KEY = savedJobKey;
-  const savedOpenAiKey = process.env.OPENAI_API_KEY;
   if (savedOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = savedOpenAiKey;
   rmSync(blockedBase, { recursive: true, force: true });

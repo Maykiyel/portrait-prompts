@@ -35,8 +35,10 @@ export function Generate() {
   // Before the first Status lands nothing is chosen, so the form waits for the
   // catalog rather than guessing at a default it would then have to correct.
   const provider = catalog.find((p) => p.id === providerId) ?? catalog[0];
-  const model = provider?.models.find((m) => m.id === modelKey) ?? provider?.models[0];
-  const chosenModel = modelKey && model?.id === modelKey ? model : provider?.models[0];
+  // Before a model is chosen the form shows the first one the Provider offers,
+  // so the control is never blank and never names something the Provider would
+  // refuse; choosing another sets the key and this resolves it.
+  const chosenModel = provider?.models.find((m) => m.id === modelKey) ?? provider?.models[0];
   // A model with a single size has only one, so the size control shows that one
   // rather than a choice the Provider cannot honour.
   const sizeChoices = provider?.sizes ?? [];
@@ -205,6 +207,10 @@ export function Generate() {
             </span>
           </div>
           <Progress value={percent} aria-label="Generation progress" />
+
+          {state.notice && (
+            <p className="mt-4 text-sm text-muted-foreground">{state.notice}</p>
+          )}
 
           {state.error && (
             <Alert variant="destructive" className="mt-4">

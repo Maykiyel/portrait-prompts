@@ -38,6 +38,13 @@ export type Provider = {
   keyVar: string;
   /** The image sizes this provider can produce, smallest first. */
   sizes: readonly string[];
+  /**
+   * The shapes it can produce, or null when it publishes no list. Null rather
+   * than an enumeration, because the vendor SDK is handed the ratio either way
+   * and a list written here would be a guess at what it accepts; a name that is
+   * in a list is a refusal the caller can act on before a request is spent.
+   */
+  aspectRatios: readonly string[] | null;
   models: readonly ProviderModel[];
   /** Images it will accept per minute, when it publishes a limit. Null when it does not. */
   imagesPerMinute: number | null;
@@ -55,15 +62,10 @@ export type ProviderRegistry = Record<string, Provider>;
 
 export const providers: ProviderRegistry = { gemini, openai };
 
-/** The provider a request gets when it names none. */
-export const DEFAULT_PROVIDER = "gemini";
-
-/** The ceiling the Job applies to any provider that does not name a tighter one. */
+/** The ceiling the run applies to any provider that does not name a tighter one. */
 export const MAX_CONCURRENCY = 8;
 
 export const providerIds = (): string[] => Object.keys(providers);
-
-export const providerFor = (id: string): Provider | undefined => providers[id];
 
 /**
  * Whether a key is present, never what it is. The browser asks this question and
@@ -92,6 +94,26 @@ export const sizeFor = (
   // Refused rather than quietly answered with something smaller. The app does
   // not do another thing than the one it was asked for.
   return { ok: false, refused: provider.refuseSize(requested) };
+};
+
+/** The shape that will actually be asked for, or a refusal naming the real limit. */
+export type AspectPlan = { ok: true } | { ok: false; refused: string };
+
+/**
+ * Whether this Provider can make the shape that was asked for. A Provider that
+ * publishes no list takes what it is given, because the vendor SDK decides, so
+ * nothing is refused there and a ratio that works today keeps working. One that
+ * names a list is refusing everything outside it, because returning a different
+ * shape under the name of the one asked for is the same defect as a size that
+ * quietly drops.
+ */
+export const aspectFor = (provider: Provider, requested: string): AspectPlan => {
+  if (provider.aspectRatios === null || provider.aspectRatios.includes(requested)) return { ok: true };
+  const shapes = provider.aspectRatios.join(" and ");
+  return {
+    ok: false,
+    refused: `${provider.label} makes ${shapes} only, so a ${requested} Frame would be filed as a ${shapes} one.`,
+  };
 };
 
 /**

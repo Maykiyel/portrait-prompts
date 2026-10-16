@@ -80,6 +80,13 @@ export type JobState = {
   blocked: number;
   startedAt?: string;
   finishedAt?: string;
+  /**
+   * One line about a limit that bit, kept beside the counts rather than printed:
+   * the run says when it clamps to what the Provider takes, and this is where the
+   * browser hears it. Absent unless it clamped, so a run that ran as asked does
+   * not claim a clamp that did not happen.
+   */
+  notice?: string;
   error?: string;
   log: { seed: number; ok: boolean; blocked: boolean; message?: string }[];
 };

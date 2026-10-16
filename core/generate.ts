@@ -8,8 +8,6 @@ import { GenerationFailure } from "./errors";
  * what it needs is stated here, and the vendor client implements it.
  */
 export type GenOptions = {
-  /** Which Provider made this. Recorded beside the model, because a model id on its own does not say. */
-  provider: string;
   model: string;
   aspectRatio: string;
   imageSize: string;
@@ -63,22 +61,56 @@ export type PromptEvent = {
   prompt: string;
 };
 
+/**
+ * How the run reports that it did not do quite what it was asked, because a limit
+ * is not the caller's to lift: the request asked for more Frames at once than this
+ * Provider will take, and the run took what it will take and said so. Reported only
+ * when it actually clamps, so a run asked for something already under the ceiling
+ * is not told about a clamp that did not happen — a note about a substitution that
+ * did not take place is the same defect as a substitution that went unreported.
+ */
+export type ClampEvent = {
+  kind: "clamp";
+  /** What was reduced. Named because a run has more than one thing it could be. */
+  what: "concurrency";
+  /** What the caller asked for. */
+  asked: number;
+  /** What the run will do instead. */
+  running: number;
+};
+
 /** Everything the run reports, in the order it happened. */
-export type ProgressEvent = StartEvent | SeedEvent | PromptEvent;
+export type ProgressEvent = StartEvent | ClampEvent | SeedEvent | PromptEvent;
 
 /**
  * What one run was asked to do. Every value is concrete: the run never has to be
  * told what "ten" means. The default generation policy that callers start from
  * is stated once in `core/policy.ts`, beside this module, and each caller
  * overrides what it means to override — so a dry run is not a default of
- * anything's, and the run itself holds no opinion about any value.
+ * anything's, and the run itself holds no opinion about any value. The one
+ * exception is the concurrency, which the run does hold an opinion about, and
+ * only because the Provider's rate is a fact about the vendor rather than about
+ * the run: the ceiling is handed in and enforced here, so both callers inherit
+ * it instead of each keeping a copy that can stop being true.
  */
 export type RunRequest = {
   /** How many Seeds to claim. Waiting Seeds are finished before fresh ones. */
   count: number;
   /** How many Frames to generate at once. At least one worker always runs. */
   concurrency: number;
-  /** Which Provider makes the Frames. Recorded in the Manifest beside the model. */
+  /**
+   * The most Frames this Provider will take at once. The run clamps to it and
+   * says so when it clamps, so the ceiling is one line of output rather than a
+   * wall of failures nobody can explain. Required rather than defaulted, for the
+   * same reason `generate` is: this module names no vendor, so it cannot work out
+   * a ceiling for one.
+   */
+  maxConcurrency: number;
+  /**
+   * Which Provider makes the Frames. Recorded in the Manifest beside the model,
+   * which is the one place the run knows a Provider made anything at all: the
+   * Generator is handed what to make and never who is making it.
+   */
   provider: string;
   /** The model to generate with. Handed to the Generator and recorded in the Manifest. */
   model: string;
@@ -151,6 +183,15 @@ export async function run(request: RunRequest): Promise<RunResult> {
     ...(todo.length ? { range: { first: todo[0], last: todo[todo.length - 1] } } : {}),
   });
 
+  // How many Frames this run makes at once. Clamped here rather than in either
+  // caller, because a ceiling is the Provider's and there are two callers: the
+  // copy one of them keeps is the copy that stops being true. The floor of one
+  // worker is not a ceiling and is not announced, since a request for none of
+  // them was never asking for the rate to be honoured.
+  const running = Math.min(Math.max(1, request.concurrency), Math.max(1, request.maxConcurrency));
+  if (running < request.concurrency)
+    report({ kind: "clamp", what: "concurrency", asked: request.concurrency, running });
+
   let done = 0;
   let failed = 0;
   let blocked = 0;
@@ -166,7 +207,6 @@ export async function run(request: RunRequest): Promise<RunResult> {
           continue;
         }
         const buffer = await request.generate(prompt, {
-          provider: request.provider,
           model: request.model,
           aspectRatio: request.aspectRatio,
           imageSize: request.imageSize,
@@ -205,6 +245,6 @@ export async function run(request: RunRequest): Promise<RunResult> {
     }
   }
 
-  await Promise.all(Array.from({ length: Math.max(1, request.concurrency) }, worker));
+  await Promise.all(Array.from({ length: running }, worker));
   return { done, failed, blocked };
 }

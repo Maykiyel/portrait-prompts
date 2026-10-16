@@ -1,11 +1,11 @@
 import "dotenv/config";
 import {
-  providers, providerFor, sizeFor, type ProviderRegistry,
+  aspectFor, maxConcurrencyFor, providers, sizeFor, type ProviderRegistry,
 } from "../core/providers";
 import {
   run, type ProgressEvent, type RunRequest, type RunResult,
 } from "../core/generate";
-import { policy } from "../core/policy";
+import { policyFor } from "../core/policy";
 
 /**
  * What the command line was asked to do. Every generation value here is the
@@ -67,6 +67,12 @@ export async function generateImages(
       console.log(
         `${event.version} | ${options.model} | ${event.total} to generate, ${event.alreadyDone} already done${range}`,
       );
+    } else if (event.kind === "clamp") {
+      // Said here rather than where it happens, because this is the module that
+      // owns every byte on a terminal: the run reports that it clamped and leaves
+      // the wording to whoever is watching, and a person who asked for 100 at once
+      // and got eight is owed the reason before the first Seed lands.
+      console.log(`--concurrency ${event.asked} is more than this provider takes, so ${event.running} at a time.`);
     } else if (event.kind === "prompt") {
       console.log(`\n[${event.seed}] ${event.prompt}`);
     } else if (event.kind === "seed") {
@@ -83,7 +89,15 @@ export async function generateImages(
     }
   };
 
-  const result = await run({ ...options, generate: provider.generate, onEvent: render });
+  const result = await run({
+    ...options,
+    generate: provider.generate,
+    // The Provider's ceiling, handed to the run rather than applied here. The run
+    // owns the clamp and says when it has made one, and a second copy of that rule
+    // beside the flags is the copy that stops being true.
+    maxConcurrency: maxConcurrencyFor(provider),
+    onEvent: render,
+  });
   // A dry run wrote nothing, so it has nothing to summarise.
   if (!options.dryRun) {
     console.log(`\nDone. ${result.done} ok, ${result.failed} failed. Output in ${options.outDir}/`);
@@ -106,19 +120,29 @@ export async function generateImages(
  * and whether to look before spending. Both are a flag away from being anything
  * else, and neither is a default the Job would want.
  *
+ * The registry is handed in rather than imported, the same one `generateImages` is
+ * given, so the flags resolve against the Providers this caller actually has: a
+ * module that resolved them against its own import would be answering with a
+ * vendor's catalog in a test that asked about a different one, and would name a
+ * Provider nobody running this command has.
+ *
  * `--model` and `--provider` are resolved after the loop, not where they are
- * found, because a model key only means something beside a provider and the two
- * flags may be written in either order. A model may be named by its key or by
+ * found, because a model key only means something beside a Provider and the two
+ * flags may be written in either order. The same is true of the default model: a
+ * request that names another Provider gets that Provider's default rather than
+ * the one it inherited, because a Gemini model id handed to OpenAI fails every
+ * Seed instead of making the wrong picture. A model may be named by its key or by
  * the vendor's own string, so `--model gpt-image-2.5-flare` still works.
  */
-export function parseArgs(argv: string[]): CliOptions {
+export function parseArgs(argv: string[], registry: ProviderRegistry): CliOptions {
   const o: CliOptions = {
-    ...policy,
+    ...policyFor(registry),
     outDir: "out",
     dryRun: false,
     salt: (process.env.SEED_SALT ?? "").trim(),
   };
   let modelKey: string | undefined;
+  let namedProvider = o.provider;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const v = () => argv[++i];
@@ -127,7 +151,7 @@ export function parseArgs(argv: string[]): CliOptions {
     else if (a === "--count") o.count = Number(v());
     else if (a === "--concurrency") o.concurrency = Number(v());
     else if (a === "--model") modelKey = v();
-    else if (a === "--provider") o.provider = v() ?? o.provider;
+    else if (a === "--provider") namedProvider = v() ?? namedProvider;
     else if (a === "--aspect") o.aspectRatio = v();
     else if (a === "--size") o.imageSize = v();
     else if (a === "--out") o.outDir = v();
@@ -136,26 +160,33 @@ export function parseArgs(argv: string[]): CliOptions {
     else throw new Error(`Unknown flag ${a}`);
   }
 
-  const provider = providerFor(o.provider);
-  if (provider) {
-    const model =
-      (modelKey && provider.models.find((m) => m.id === modelKey || m.model === modelKey)) ||
-      provider.models.find((m) => m.model === o.model);
-    if (model) {
-      o.model = model.model;
-      // Refused here rather than at the API, so an impossible size costs nothing
-      // to discover.
-      const plan = sizeFor(provider, model, o.imageSize);
-      if (!plan.ok) throw new Error(plan.refused);
-      o.imageSize = plan.size;
-    }
-  }
+  const provider = registry[namedProvider];
+  // Refused by name, with the same words the route uses, because a Provider id
+  // that is in no registry cannot become a run and a flag that quietly falls back
+  // to the default is a run nobody asked for.
+  if (!provider) throw new Error(`Unknown provider: ${namedProvider}`);
+  const model =
+    (modelKey && provider.models.find((m) => m.id === modelKey || m.model === modelKey)) ||
+    // No `--model`: the default is this Provider's own, asked of the catalog that
+    // holds it rather than of the provider named in the flags.
+    provider.models.find((m) => m.model === policyFor(registry, namedProvider).model);
+  if (!model) throw new Error(`Unknown model for ${provider.label}`);
+  o.provider = namedProvider;
+  o.model = model.model;
+  // Both limits refused here rather than at the API, so an image that cannot be
+  // made costs nothing to discover. The size resolves first because a model with
+  // exactly one size answers it rather than refusing it.
+  const plan = sizeFor(provider, model, o.imageSize);
+  if (!plan.ok) throw new Error(plan.refused);
+  o.imageSize = plan.size;
+  const shape = aspectFor(provider, o.aspectRatio);
+  if (!shape.ok) throw new Error(shape.refused);
   return o;
 }
 
 // Only run the CLI when this file is the entry point.
 if (process.argv[1]?.endsWith("generate.ts")) {
-  generateImages(parseArgs(process.argv.slice(2)), providers).then(({ failed, blocked }) => {
+  generateImages(parseArgs(process.argv.slice(2), providers), providers).then(({ failed, blocked }) => {
     if (failed > 0 || blocked > 0) process.exitCode = 1;
   });
 }

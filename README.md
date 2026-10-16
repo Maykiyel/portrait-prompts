@@ -94,7 +94,7 @@ Every prompt comes from a seed. A counter in `out/cursor.json` hands seeds out i
 
 - `out/00001.png` is the final 768x1152 image. Images are cropped to fit, centered on the most detailed area.
 - `out/raw/00001.png` is the untouched original.
-- `out/manifest.jsonl` has one line per attempt with seed, prompt version, salt, model or source, prompt text and status.
+- `out/manifest.jsonl` has one line per attempt with seed, prompt version, salt, provider, model or source, prompt text and status.
 - `out/cursor.json` holds the seed counter and the salt it was started with.
 - `out/thumbs/` holds gallery thumbnails. It is safe to delete.
 
@@ -132,12 +132,12 @@ Flags worth knowing.
 
 ### Providers
 
-Each provider owns its models, its key and its limits, so nothing above it needs to know which vendor it is talking to. Adding one is a file and an entry in `core/providers.ts`.
+Each provider owns its models, its key and its limits, so nothing above it needs to know which vendor it is talking to. Adding one is a new file, an entry in the registry in `core/providers.ts`, and, if it is to answer the no-flag defaults, a key in the default-model map in `core/policy.ts`. The vendor guard in `test/smoke-audit.ts` must then learn its name, because a guard that stops naming the moment it matters is no guard at all.
 
 | | key | models | sizes | notes |
 | --- | --- | --- | --- | --- |
 | **Gemini** | `GEMINI_API_KEY` | `flash` (default), `lite`, `pro` | 1K, 2K, 4K | `lite` is 1K only. No free tier. |
-| **OpenAI** | `OPENAI_API_KEY` | `flare` (default), `sunburst` | 1K, 2K | No 4K at 2:3 — see below. |
+| **OpenAI** | `OPENAI_API_KEY` | `flare` (default), `sunburst` | 1K, 2K | No 4K and 2:3 only, so any other aspect ratio is refused before a request is made. See below. |
 
 Gemini model ids are `gemini-3.1-flash-lite-image`, `gemini-3.1-flash-image` and `gemini-3-pro-image`. OpenAI's are `gpt-image-2.5-flare` and `gpt-image-2.5-sunburst`; `gpt-image-1` is deprecated and its shutdown is 23 October 2026.
 

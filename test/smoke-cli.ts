@@ -14,7 +14,8 @@ import sharp from "sharp";
 import { generateImages } from "../cli/generate";
 import { importImages } from "../cli/import-images";
 import { openOutputFolder } from "../core/output-folder";
-import { policy } from "../core/policy";
+import { policyFor } from "../core/policy";
+const policy = policyFor(providers);
 import { providers } from "../core/providers";
 import { asyncCode, bad, captureOutput, check, good, promptFiles, repoRoot, results, streamBytes, withGenerators } from "./smoke-harness";
 

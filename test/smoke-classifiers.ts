@@ -160,4 +160,3 @@ results.push(check(
   shared.every(([, gemini, openai]) => gemini === openai) && shared.length === 5,
 ));
 
-export const classifiersRun = (): boolean => results.every(Boolean);

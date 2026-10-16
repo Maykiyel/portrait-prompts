@@ -91,7 +91,10 @@ export const openaiGenerator: Generator = async (prompt, opts) => {
   }
   const size = SIZES[opts.imageSize];
   if (!size) {
-    throw new GenerationFailure("no-image", `No OpenAI size is configured for ${opts.imageSize}.`);
+    // Not `no-image`: that code says the call came back with nothing in it, and
+    // nothing was called at all. This is the app asking for a shape of image this
+    // module has no size for, which no run will clear until it asks for one it has.
+    throw new GenerationFailure("unsupported-size", `No OpenAI size is configured for ${opts.imageSize}.`);
   }
   client ??= new OpenAI({
     apiKey: key,
@@ -129,8 +132,12 @@ export const openaiGenerator: Generator = async (prompt, opts) => {
       const terminal = refused(err);
       if (terminal) throw terminal;
       if (err instanceof GenerationFailure || attempt >= maxAttempts || !isRetryable(err)) throw err;
-      // `Retry-After` is documented as something the service may send, so it is
-      // read when present and never waited on when absent.
+      // Exponential from two seconds, capped at thirty, plus a jitter under half
+      // a second so a limit that clears for the whole account is not re-asked by
+      // every worker in the same instant. Nothing here waits on a header the
+      // service may send: the wait is this module's own and is the same for every
+      // 429, which is what keeps one rule from quietly changing shape with the
+      // error it was handed.
       const wait = Math.min(30_000, 1000 * 2 ** attempt) + Math.random() * 500;
       console.warn(`  retry ${attempt}/${maxAttempts - 1} in ${Math.round(wait)}ms`);
       await sleep(wait);
@@ -143,6 +150,12 @@ export const openai: Provider = {
   label: "OpenAI",
   keyVar: "OPENAI_API_KEY",
   sizes: ["1K", "2K"],
+  // One shape, and the request field is not a free-form ratio: OpenAI's image
+  // endpoint takes a size, and every size it offers is 2:3. A 16:9 request that
+  // reached it would not fail — it would come back as a 2:3 portrait, which is
+  // why this list exists at all and why a ratio outside it is refused rather than
+  // handed over.
+  aspectRatios: ["2:3"],
   // 20 images a minute on the Build tier, and the ceiling is the same on every
   // model. Concurrency is clamped against it, which at the app's own ceiling of
   // 8 leaves nothing to clamp — the number is here so the rule is derived from

@@ -34,7 +34,14 @@ export type GenerationFailureCode =
   /** The vendor refused the Prompt itself. No run will ever generate this Seed. */
   | "prompt-refused"
   /** The call came back with no image in it. The Prompt is still usable. */
-  | "no-image";
+  | "no-image"
+  /**
+   * The app asked for a shape or a size of image the vendor client has no way to
+   * request. Its own code rather than `no-image`, because nothing was called: a
+   * call that came back empty is a render that lost the draw and the next run
+   * may make, and this is a request no run will clear until it names another.
+   */
+  | "unsupported-size";
 
 export class GenerationFailure extends Error {
   constructor(

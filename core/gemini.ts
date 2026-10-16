@@ -122,6 +122,10 @@ export const gemini: Provider = {
   label: "Gemini",
   keyVar: "GEMINI_API_KEY",
   sizes: ["1K", "2K", "4K"],
+  // Google takes the ratio as a parameter and publishes no list of the ones it
+  // will accept, so nothing is claimed here that cannot be checked and nothing
+  // is refused: the SDK decides, which is what it did before this field existed.
+  aspectRatios: null,
   // Google no longer publishes per-model image limits, so nothing is claimed
   // here that cannot be checked. The app's own ceiling stands.
   imagesPerMinute: null,
