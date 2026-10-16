@@ -10,7 +10,7 @@ import { Switch } from "@/shared/components/ui/switch";
 import { PageHeader } from "@/shared/components/page-header";
 import { QueryError } from "@/shared/components/query-error";
 import { useAddPrompts, usePending } from "@/shared/lib/prompts-api";
-import { useSettings } from "@/app/settings-store";
+import { useSettings } from "@/shared/lib/settings-store";
 import { PromptRow } from "./prompt-row";
 
 export function Prompts() {
