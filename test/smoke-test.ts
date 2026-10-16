@@ -25,6 +25,7 @@ import { refusalFor } from "../server/jobs";
 import { createStore } from "../server/store";
 import { runAudit } from "./smoke-audit";
 import { runCliContract } from "./smoke-cli";
+import "./smoke-classifiers";
 import {
   asyncCode, bad, captureOutput, check, errorCode, good, jobOf, promptFiles, repoRoot, results,
   settleJob, streamBytes,
