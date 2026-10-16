@@ -297,9 +297,12 @@ export function runAudit(): void {
     sources.get(file) ?? readFileSync(join(repoRoot, file), "utf8");
   // The run's own text and every module it stands on. Comments are not code, so
   // a module that says in prose that it prints is not printing.
+  // The vendor half names every vendor rather than the first one this file was
+  // written for. A guard that stops guarding the moment it first matters reads
+  // as coverage, so adding a vendor here is part of adding one to the registry.
   const narrates = (sources: Map<string, string>, entry: string): string[] =>
     [entry, ...graphFrom(entry, sources)].filter((f) =>
-      /console\.|@google\/genai/.test(code(textOf(sources, f))));
+      /console\.|@google\/genai|\bfrom\s+["']openai(?:\/[^"']*)?["']/.test(code(textOf(sources, f))));
   const runGraph = graphFrom(RUN, sourceText);
   const narrators = narrates(sourceText, RUN);
   results.push(check(
@@ -318,9 +321,18 @@ export function runAudit(): void {
   own.set(RUN, `${textOf(sourceText, RUN)}\nconsole.log("a print inside the run itself");\n`);
   const beneath = new Map(sourceText);
   beneath.set(OWNER, `${textOf(sourceText, OWNER)}\nconsole.warn("a print inside the module the run stands on");\n`);
+  // The vendor half of the guard is the half that had nothing proving it could
+  // fail, so a planted vendor import — a bare one and one through a subpath —
+  // must turn it red on its own, the same as the print above. Ending this without
+  // naming a vendor would read as coverage, which is the failure being guarded.
+  const vendorImport = new Map(sourceText);
+  vendorImport.set(RUN, `${textOf(sourceText, RUN)}\nimport { x } from "openai/resources/images";\n`);
+  const vendorBare = new Map(sourceText);
+  vendorBare.set(RUN, `${textOf(sourceText, RUN)}\nimport x from "@google/genai";\n`);
   results.push(check(
-    "the run's silence is not vacuous: a print in the run, or in a module it stands on, turns it red",
+    "the run's silence is not vacuous: a print in the run, or in a module it stands on, turns it red, and naming a vendor turns it red too",
     narrates(own, RUN).includes(RUN) && narrates(beneath, RUN).includes(OWNER) &&
+      narrates(vendorImport, RUN).includes(RUN) && narrates(vendorBare, RUN).includes(RUN) &&
       !narrators.includes(RUN) && !narrators.includes(OWNER),
   ));
 

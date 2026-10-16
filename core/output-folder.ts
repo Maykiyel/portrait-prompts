@@ -11,6 +11,8 @@ export type FolderStatus = {
   done: number;
   waiting: number | null;
   failed: number;
+  /** Seeds whose last Attempt was a refusal no run will ever clear. Counted apart from `failed`, because they are finished rather than waiting. */
+  blocked: number;
   saltSet: boolean;
   problem?: string;
   /** Which problem `problem` describes, so a caller can tell a report from a stop. */
@@ -21,6 +23,8 @@ export type FrameRecord = {
   seed: number;
   version: string;
   source: "api" | "manual" | "unknown";
+  /** Which Provider made this. Rows written before Providers existed name the only one that did. */
+  provider?: string;
   model?: string;
   prompt: string;
   updatedAt: string;
@@ -30,7 +34,9 @@ export type PromptItem = { seed: number; prompt: string };
 
 export type Attempt = {
   seed: number;
-  status: "ok" | "failed" | "rejected";
+  /** `blocked` is a refusal no run will ever clear, so the Seed is finished. `failed` is one a later run might clear. */
+  status: "ok" | "failed" | "blocked" | "rejected";
+  provider?: string;
   model?: string;
   source?: "manual" | "api";
   file?: string;
@@ -42,6 +48,7 @@ export type Attempt = {
 export type FrameWrite = {
   seed: number;
   buffer: Buffer;
+  provider?: string;
   model?: string;
   source?: "manual" | "api";
   file?: string;
@@ -74,6 +81,7 @@ type ManifestRow = {
   seed: number;
   status: string;
   version?: string;
+  provider?: string;
   model?: string;
   source?: string;
   prompt?: string;
@@ -192,14 +200,29 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
   const waitingSeeds = (): number[] => {
     const counter = readCounter();
     assertSalt(counter);
+    const latest = latestStatuses();
     const waiting: number[] = [];
-    for (let seed = 1; seed < (counter?.next ?? 1); seed++) if (!hasFrame(seed)) waiting.push(seed);
+    // A Seed whose Prompt was refused is finished, not waiting. It has no Frame
+    // and will never get one, so handing it out again would spend a run on a
+    // Prompt the vendor has already refused once and will refuse every time.
+    for (let seed = 1; seed < (counter?.next ?? 1); seed++)
+      if (!hasFrame(seed) && latest.get(seed) !== "blocked") waiting.push(seed);
     return waiting;
   };
 
   const readManifest = (): ManifestRow[] => {
     if (!existsSync(manifestFile)) return [];
     return readFileSync(manifestFile, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as ManifestRow);
+  };
+
+  /**
+   * The last Attempt for every Seed, which is what "what happened to this Seed"
+   * is answered by. The Manifest is append-only, so the last row written wins.
+   */
+  const latestStatuses = (): Map<number, string> => {
+    const latest = new Map<number, string>();
+    for (const row of readManifest()) latest.set(row.seed, row.status);
+    return latest;
   };
 
   const frameSeeds = (): number[] => {
@@ -213,16 +236,17 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
 
   const status = (): FolderStatus => {
     const done = frameSeeds().length;
-    const latest = new Map<number, string>();
-    for (const row of readManifest()) latest.set(row.seed, row.status);
+    const latest = latestStatuses();
     const failed = [...latest.values()].filter((value) => value === "failed").length;
-    const base = { version, done, failed, saltSet: salt !== "" };
+    const blocked = [...latest.values()].filter((value) => value === "blocked").length;
+    const base = { version, done, failed, blocked, saltSet: salt !== "" };
     try {
       const counter = readCounter();
       assertSalt(counter);
       const next = counter?.next ?? 1;
       let waiting = 0;
-      for (let seed = 1; seed < next; seed++) if (!hasFrame(seed)) waiting++;
+      for (let seed = 1; seed < next; seed++)
+        if (!hasFrame(seed) && latest.get(seed) !== "blocked") waiting++;
       return { ...base, next, waiting };
     } catch (err) {
       if (!(err instanceof ArchiveError)) throw err;
@@ -262,6 +286,11 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
         seed,
         version: row?.version ?? "unknown",
         source: row?.source === "manual" ? "manual" : row ? "api" : "unknown",
+        // Rows written before a Manifest carried a provider name one that was
+        // available at the time, so this reads a fact about the row rather than
+        // guessing at it. The default is stated here and nowhere else, because
+        // this is the only module that reads the Manifest.
+        provider: row ? (row.provider ?? "gemini") : undefined,
         model: row?.model,
         prompt: row?.prompt ?? "",
         updatedAt: statSync(frameFile(seed)).mtime.toISOString(),
@@ -297,8 +326,9 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
       appendFileSync(manifestFile, JSON.stringify({ seed: attempt.seed, status: "rejected", ts: attempt.ts ?? new Date().toISOString() }) + "\n");
       return;
     }
-    const { seed, model, source, file, prompt, status: result, error, ts } = attempt;
+    const { seed, provider, model, source, file, prompt, status: result, error, ts } = attempt;
     const row: Record<string, unknown> = { seed, version, salt };
+    if (provider !== undefined) row.provider = provider;
     if (model !== undefined) row.model = model;
     if (source !== undefined) row.source = source;
     if (file !== undefined) row.file = file;
@@ -316,7 +346,12 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     if (!counter || frame.seed >= counter.next || hasFrame(frame.seed))
       throw new ArchiveError("seed-not-waiting", `Seed ${frame.seed} is not waiting for a Frame`);
     mkdirSync(join(root, "raw"), { recursive: true });
-    await sharp(frame.buffer).png().toFile(rawFile(frame.seed));
+    // The bytes the vendor sent, written as they arrived. Both vendors sign their
+    // images with C2PA content credentials, and re-encoding through sharp would
+    // strip that signature — Google documents any non-C2PA modification as
+    // tampering. The Frame below is still resized, because a Frame is a fixed
+    // size by definition and carries no such claim.
+    writeFileSync(rawFile(frame.seed), frame.buffer);
     await sharp(frame.buffer).resize(768, 1152, { fit: "cover", position: "attention" }).png().toFile(frameFile(frame.seed));
     recordAttempt({ ...frame, status: "ok" });
   };

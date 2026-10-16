@@ -4,10 +4,9 @@ import { Hono, type Context } from "hono";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import "dotenv/config";
-import { geminiGenerator } from "../core/gemini";
+import { providers, type ProviderRegistry } from "../core/providers";
 import type { GenerateRequest } from "../shared/api-types";
 import { ArchiveError, type ArchiveErrorCode } from "../core/errors";
-import type { Generator } from "../core/generate";
 import { seedLabel } from "../core/output-folder";
 import { createJob, refusalFor } from "./jobs";
 import {
@@ -30,17 +29,17 @@ const send = (c: Context, stream: FrameStream) => c.body(Readable.toWeb(stream) 
  * An app serves exactly one dataset, handed to it rather than found: the root
  * says which output folder, the salt says which run of Seeds is legitimate there.
  * Nothing inside reads the environment, so every app in a process is its own
- * dataset and a test can point one at a temporary directory. The Generator is
- * handed in with it rather than found either, so a route can start a Job without
- * naming an image vendor and a test can drive one with a fake.
+ * dataset and a test can point one at a temporary directory. The registry of
+ * Providers is handed in with it rather than found either, so a route can start a
+ * Job without naming an image vendor and a test can drive one with a fake.
  */
-export function createApp(dataset: Dataset, generate: Generator): Hono {
+export function createApp(dataset: Dataset, registry: ProviderRegistry): Hono {
   const app = new Hono();
-  const store = createStore(dataset);
+  const store = createStore(dataset, registry);
   // The Job belongs to this app and not to the process: built here and closed
   // over, so the routes below ask their own Job and no other app's, and a test
   // can hold one of its own.
-  const job = createJob(dataset, generate);
+  const job = createJob(dataset, registry);
 
   app.onError((err, c) => {
     if (err instanceof ArchiveError) return c.json({ error: err.message }, STATUS_BY_CODE[err.code]);
@@ -96,7 +95,7 @@ export function createApp(dataset: Dataset, generate: Generator): Hono {
 
   api.post("/generate", async (c) => {
     const req = await c.req.json<GenerateRequest>();
-    const refused = refusalFor(job.state(), Boolean(process.env.GEMINI_API_KEY), req);
+    const refused = refusalFor(job.state(), registry, req);
     if (refused) return c.json({ error: refused.message }, refused.status);
     return c.json(job.start(req));
   });
@@ -109,7 +108,7 @@ export function createApp(dataset: Dataset, generate: Generator): Hono {
 // The composition root: the one place the environment names a dataset and the
 // one place this process names a vendor. Both are read once here and handed on.
 const dataset: Dataset = { outDir: process.env.OUT_DIR ?? "out", salt: (process.env.SEED_SALT ?? "").trim() };
-const app = createApp(dataset, geminiGenerator);
+const app = createApp(dataset, providers);
 
 // Built UI, when it exists. In development Vite serves the UI instead.
 const dist = "./web/dist";

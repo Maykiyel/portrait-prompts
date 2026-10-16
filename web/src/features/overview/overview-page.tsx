@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { Link, useNavigate } from "react-router";
 import { AlertTriangle } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/shared/components/ui/alert";
@@ -103,8 +104,12 @@ export function Overview() {
         <dd className="tabular-nums">{s.next ?? "Unknown"}</dd>
         <dt className="text-muted-foreground">Seed salt</dt>
         <dd>{s.saltSet ? "Set" : "Not set"}</dd>
-        <dt className="text-muted-foreground">Gemini API key</dt>
-        <dd>{s.hasApiKey ? "Set" : "Not set"}</dd>
+        {s.providers.map((p) => (
+          <Fragment key={p.id}>
+            <dt className="text-muted-foreground">{p.label} API key</dt>
+            <dd>{p.hasApiKey ? "Set" : "Not set"}</dd>
+          </Fragment>
+        ))}
       </dl>
     </>
   );

@@ -38,6 +38,9 @@ importers:
       lucide-react:
         specifier: ^1.52.0
         version: 1.52.0(@types/react@19.3.0)(react@19.3.0)
+      openai:
+        specifier: ^7.34.0
+        version: 7.34.0(ws@8.22.0)
       radix-ui:
         specifier: ^1.7.0
         version: 1.7.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -2160,6 +2163,30 @@ packages:
     resolution: {integrity: sha512-XrsrhT5sybtKI6wakr2SPOlGZWWYbUXZ7a0jT8/QOeAPau+1X/bSegNe5YR75oJmEZQbKningirmGOEJCIk61Q==}
     engines: {node: '>=12.20.0'}
 
+  openai@7.34.0:
+    resolution: {integrity: sha512-PMwuTQ/3cVyWZJOVpb6bzlrQj17uImlnUGQWqh5zHlN/snwK5ww4ZUHW8NYGtH6f9PQOEPxyD/f8WJVIHp1q2A==}
+    engines: {node: '>=22.0.0'}
+    peerDependencies:
+      '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
+      '@smithy/hash-node': '>=4.3.0 <5'
+      '@smithy/signature-v4': '>=5.4.0 <6'
+      undici: '>=5 <9'
+      ws: ^8.21.0
+      zod: ^3.25 || ^4.0
+    peerDependenciesMeta:
+      '@aws-sdk/credential-provider-node':
+        optional: true
+      '@smithy/hash-node':
+        optional: true
+      '@smithy/signature-v4':
+        optional: true
+      undici:
+        optional: true
+      ws:
+        optional: true
+      zod:
+        optional: true
+
   oxlint@1.87.0:
     resolution: {integrity: sha512-drxVlaW7Oqq7wSy1CN25znRu00aRq8n57Q2wniJRxCmtYVz07ufCm7EVDPQFZURrTgQIjzKrVEHAD/HcvJXObg==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -4255,6 +4282,10 @@ snapshots:
   node-releases@2.0.57: {}
 
   obug@2.2.1: {}
+
+  openai@7.34.0(ws@8.22.0):
+    optionalDependencies:
+      ws: 8.22.0
 
   oxlint@1.87.0:
     optionalDependencies:

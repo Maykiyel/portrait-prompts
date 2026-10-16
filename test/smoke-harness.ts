@@ -3,7 +3,9 @@
 // shares. No behaviour lives here.
 import { readFileSync } from "node:fs";
 import sharp from "sharp";
-import { ArchiveError } from "../core/errors";
+import { ArchiveError, GenerationFailure } from "../core/errors";
+import { providers, type ProviderRegistry } from "../core/providers";
+import type { Generator } from "../core/generate";
 import type { createApp } from "../server/index";
 import type { JobState } from "../shared/api-types";
 
@@ -14,13 +16,31 @@ export const check = (name: string, cond: boolean) => {
   return cond;
 };
 
-// The two fake generators: one that always lands a Frame, and one that
-// fails the way a quota error would.
+// The three fake generators: one that always lands a Frame, one that fails the
+// way a quota error would, and one that refuses the Prompt the way a vendor's
+// moderation would. The third is what makes `blocked` observable at all.
 export const good = async () =>
   sharp({ create: { width: 848, height: 1264, channels: 3, background: "#7a8fa6" } }).png().toBuffer();
 export const bad = async () => {
   throw new Error("fake quota error");
 };
+export const refused = async () => {
+  throw new GenerationFailure("prompt-refused", "fake moderation refusal");
+};
+
+/**
+ * The registry a test drives instead of the real one: every Provider is kept,
+ * with its catalog and its key check intact, and only the thing that makes an
+ * image is swapped. A test can then ask for a model and a size exactly as a
+ * browser would, and be refused by the same rules, without reaching a network.
+ */
+export const withGenerators = (swaps: Record<string, Generator>): ProviderRegistry =>
+  Object.fromEntries(
+    Object.entries(providers).map(([id, provider]) => [
+      id,
+      swaps[id] ? { ...provider, generate: swaps[id] } : provider,
+    ]),
+  );
 
 /**
  * Everything a block of code writes to the terminal, captured rather than shown.

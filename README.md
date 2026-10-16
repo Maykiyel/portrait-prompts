@@ -1,6 +1,6 @@
 # portrait-prompts
 
-A workbench for building a synthetic portrait dataset. It writes seeded prompts, you get the images from Gemini, and it files them as 768x1152 PNGs with a record of the exact prompt behind each one.
+A workbench for building a synthetic portrait dataset. It writes seeded prompts, you get the images from an image vendor, and it files them as 768x1152 PNGs with a record of the exact prompt behind each one.
 
 You can work in the web app or on the command line. Both share the same `out/` folder.
 
@@ -8,9 +8,9 @@ Each portrait is a fictional adult with randomized age, background, face, hair, 
 
 ## Requirements
 
-- Node 20.19 or newer, or Node 22.12 or newer.
+- Node 22.12 or newer.
 - npm, pnpm or yarn. Any of them works, and nothing in the repo depends on one. See [Package managers](#package-managers).
-- A Gemini API key, only for the paid API route. The Gemini API has no free tier for image models.
+- An API key for at least one provider, only for the paid API route. Gemini's image models have no free tier. OpenAI's need a card with at least $5 on it, and may ask you to verify your organisation first.
 
 ## Package managers
 
@@ -58,16 +58,16 @@ The server listens on 127.0.0.1 only and has no login. Do not expose it to a net
 
 ### API route, paid
 
-1. Set `GEMINI_API_KEY` in `.env` and restart the server.
-2. Open **Generate**, pick a model, size and count, and start. Progress updates live.
-3. Failed seeds stay waiting and run first next time.
+1. Set `GEMINI_API_KEY` or `OPENAI_API_KEY` in `.env` and restart the server.
+2. Open **Generate**, pick a provider, a model, a size and a count, and start. Progress updates live.
+3. Failed seeds stay waiting and run first next time. A seed whose *prompt* a vendor refused outright is blocked instead: it will not be offered again, because retrying it would only be refused again.
 
 ### Pages
 
 - **Overview** shows progress, the next step and your latest images.
 - **Prompts** lists waiting prompts with copy buttons and a toggle for the "Avoid" line.
 - **Import** matches downloaded images to prompts.
-- **Generate** runs the Gemini API with a progress bar.
+- **Generate** runs the chosen provider's API with a progress bar.
 - **Gallery** is a contact sheet of every image, with detail, download and reject.
 
 ## Seed salt
@@ -94,7 +94,7 @@ Every prompt comes from a seed. A counter in `out/cursor.json` hands seeds out i
 
 - `out/00001.png` is the final 768x1152 image. Images are cropped to fit, centered on the most detailed area.
 - `out/raw/00001.png` is the untouched original.
-- `out/manifest.jsonl` has one line per attempt with seed, prompt version, salt, model or source, prompt text and status.
+- `out/manifest.jsonl` has one line per attempt with seed, prompt version, salt, provider, model or source, prompt text and status.
 - `out/cursor.json` holds the seed counter and the salt it was started with.
 - `out/thumbs/` holds gallery thumbnails. It is safe to delete.
 
@@ -119,17 +119,33 @@ The command line does the same work without the app.
 | --- | --- |
 | `npm run prompts -- --count 20` | Writes `prompts.html` with copy buttons. |
 | `npm run import-images -- --in "D:/Downloads/gemini"` | Resizes and files a folder of downloads. |
-| `npm run generate -- --count 10` | Generates images with the Gemini API. |
+| `npm run generate -- --count 10` | Generates images through the default provider. |
 | `npm run status` | Shows the next seed, images done and seeds waiting. |
 
 Flags worth knowing.
 
 - `prompts` takes `--count` (default 20), `--start`, `--out`, `--dir` and `--no-negative`.
 - `import-images` takes `--in` (required), `--start`, `--out` and `--dry-run`. Files are matched to the oldest waiting seeds by download time. Run it with `--dry-run` first.
-- `generate` takes `--count` (default 10), `--model lite|flash|pro`, `--size 1K|2K|4K`, `--aspect`, `--concurrency`, `--start`, `--out`, `--no-negative` and `--dry-run`.
+- `generate` takes `--count` (default 10), `--provider gemini|openai`, `--model`, `--size`, `--aspect`, `--concurrency`, `--start`, `--out`, `--no-negative` and `--dry-run`. `--provider` and `--model` may come in either order.
+- `--model` takes a key or the vendor's own model string, so both `--model flash` and `--model gemini-3.1-flash-image` work.
 - `--start N` names the Seeds by hand instead of following the counter. `generate` and `import-images` still record them, so the counter moves past them and the same Seed is never handed out twice. `prompts` only writes the HTML page, so it leaves the counter alone. A dry run never moves it.
 
-Model names are `gemini-3.1-flash-lite-image` for `lite`, `gemini-3.1-flash-image` for `flash`, and `gemini-3-pro-image` for `pro`. The lite model supports 1K only. Rate limit and server errors retry up to 5 times with backoff. Quota errors such as "limit: 0" fail at once, because retrying never helps.
+### Providers
+
+Each provider owns its models, its key and its limits, so nothing above it needs to know which vendor it is talking to. Adding one is a new file, an entry in the registry in `core/providers.ts`, and, if it is to answer the no-flag defaults, a key in the default-model map in `core/policy.ts`. The vendor guard in `test/smoke-audit.ts` must then learn its name, because a guard that stops naming the moment it matters is no guard at all.
+
+| | key | models | sizes | notes |
+| --- | --- | --- | --- | --- |
+| **Gemini** | `GEMINI_API_KEY` | `flash` (default), `lite`, `pro` | 1K, 2K, 4K | `lite` is 1K only. No free tier. |
+| **OpenAI** | `OPENAI_API_KEY` | `flare` (default), `sunburst` | 1K, 2K | No 4K and 2:3 only, so any other aspect ratio is refused before a request is made. See below. |
+
+Gemini model ids are `gemini-3.1-flash-lite-image`, `gemini-3.1-flash-image` and `gemini-3-pro-image`. OpenAI's are `gpt-image-2.5-flare` and `gpt-image-2.5-sunburst`; `gpt-image-1` is deprecated and its shutdown is 23 October 2026.
+
+**OpenAI cannot make a 4K portrait**, and the app refuses the request rather than quietly returning something smaller. Its largest 2:3 image is 1536x2304, which is *below* Gemini's 2K, so a switch from Gemini to OpenAI costs detail in `out/raw/` even at the same size setting. Gemini's own sizes at 2:3 are 848x1264, 1696x2528 and 3392x5056.
+
+Rate limit and server errors retry up to 5 times with backoff on both. Quota, billing and credit errors fail at once, because retrying never helps — on OpenAI these arrive as a 429 just like a real rate limit, so they are told apart by the error code rather than the status or the message. Vendor SDKs retry underneath this loop, and are switched off so the two policies do not multiply into 25 requests.
+
+Concurrency is clamped to what a provider publishes: OpenAI takes 20 images a minute on its Build tier, Gemini publishes no current limit. Neither clamp bites at the default concurrency.
 
 ## Scripts
 
@@ -161,7 +177,7 @@ A page's own actions stay in that page's folder, and anything more than one page
 - `cli/` is the four command-line entry points, `generate.ts`, `import-images.ts`, `export-prompts.ts` and `status.ts`. They are adapters and nothing more: each reaches the output folder through the core and stands on nothing else of ours.
 - `test/` is the offline suite, which needs no API key and no network: `smoke-test.ts` runs the pipeline with a fake Generator, `smoke-cli.ts` holds each command's own bytes, `smoke-audit.ts` holds the architectural claims — that nothing reaches `out/` except through `core/output-folder.ts`, that the command line and the server are adapters over the core and neither stands on the other, and that the browser's own layers only reach down — and the proof beside each one that it cannot pass vacuously. Four of those proofs plant a file and run oxlint over it, so each of the four lint rules guarding this layering is shown still able to fail, and `smoke-harness.ts` is the pass/fail helper they share.
 
-The Seed, Frame and Prompt rules live in the core, not in the folders. `core/output-folder.ts` is the only code that reads or writes `out/`, and it owns the folder layout, the Seed counter, the manifest, Prompt wording, and the Frame and Seed rules, all behind the one interface `openOutputFolder` returns. Its siblings are `core/sampler.ts`, which holds the attribute pools and takes the salt as an argument, `core/generate.ts`, which claims Seeds, generates Frames, records Attempts and reports progress as data without printing any of it, `core/gemini.ts`, the one Generator, which that module is handed rather than reaches for, `core/policy.ts`, which holds the default generation policy the command line and the browser both start from so they cannot drift apart, and `core/errors.ts`, the failure that carries a code rather than an HTTP status.
+The Seed, Frame and Prompt rules live in the core, not in the folders. `core/output-folder.ts` is the only code that reads or writes `out/`, and it owns the folder layout, the Seed counter, the manifest, Prompt wording, and the Frame and Seed rules, all behind the one interface `openOutputFolder` returns. Its siblings are `core/sampler.ts`, which holds the attribute pools and takes the salt as an argument, `core/generate.ts`, which claims Seeds, generates Frames, records Attempts and reports progress as data without printing any of it, `core/providers.ts` and its `gemini.ts` and `openai.ts`, which between them describe every vendor and are reached only from the two composition roots, so the run is handed a Provider rather than reaching for one, `core/policy.ts`, which holds the default generation policy the command line and the browser both start from so they cannot drift apart, and `core/errors.ts`, the failure that carries a code rather than an HTTP status.
 
 The root holds configuration and the two Prompt files, not code: `template.txt` and `negative.txt` are read from the working directory, so every command finds them wherever you run it, and `GLOSSARY.md` gives the vocabulary.
 
@@ -169,16 +185,18 @@ The root holds configuration and the two Prompt files, not code: `template.txt` 
 
 - **The page loads but nothing shows.** Run `npm run build` before `npm start`, or use `npm run dev`.
 - **A red banner says the output folder does not match.** The salt in `.env` differs from the one `out/` was started with. Restore the old value, or move `out/` aside.
-- **429 "limit: 0 ... Free Tier".** Image models have no free API tier. Enable billing on the key's project, or use the free route.
-- **Generate says no API key.** Set `GEMINI_API_KEY` in `.env` and restart the server.
+- **429 "limit: 0 ... Free Tier".** Gemini's image models have no free API tier. Enable billing on the key's project, or use the free route.
+- **A 429 from OpenAI.** Check the error code. `credit_balance_exhausted` or a spend limit means the card needs topping up and retrying will not help; `slow_down` is a real rate limit and is retried.
+- **Generate says no API key.** That provider's key is not set. Add it to `.env` and restart the server; the other provider's key does not stand in for it.
 - **The wrong image sits next to a prompt on Import.** Downloads were out of order. Change the seed in that row's dropdown. Dropping a seed another row uses swaps the two.
 - **Images come out square.** The free Gemini app picks the size. Import crops them to 2:3 and flags them.
 - **Port 3001 is busy.** Set `PORT` in `.env` and update the proxy target in `vite.config.ts` if you use `npm run dev`.
 
 ## Notes
 
-- Gemini has no negative prompt field, so the negative list goes into the prompt as "Avoid: ...".
-- Every Gemini image carries an invisible SynthID watermark.
+- Neither provider has a negative prompt field, so the negative list goes into the prompt as "Avoid: ...". OpenAI's own prompting guide recommends exactly this.
+- Every Gemini image carries an invisible SynthID watermark, and every OpenAI image carries both SynthID and C2PA content credentials. `out/raw/` holds the vendor's bytes untouched so those signatures survive; only the Frame is resized.
+- **OpenAI's block rate on these prompts is unmeasured.** Nobody publishes an over-block rate for benign photographic prompts, so the route ships without a parity claim and your first run is the measurement: the run summary reports how many seeds were blocked.
 - Free app images may also carry a visible Gemini logo. Check your first image and decide if that fits your dataset.
 - Free app limits change often. Recent guides report about 20 images per day.
 - Check Google's current pricing page before a large API run.

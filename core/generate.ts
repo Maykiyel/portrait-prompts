@@ -1,4 +1,5 @@
 import { namedSeeds, openOutputFolder } from "./output-folder";
+import { GenerationFailure } from "./errors";
 
 /**
  * The seam the run stands on: something that turns a Prompt into image bytes.
@@ -31,11 +32,21 @@ export type StartEvent = {
   version: string;
 };
 
-/** How the run reports one Seed's outcome. A failed Seed keeps a Seed of its own: it stays waiting. */
+/**
+ * How the run reports one Seed's outcome.
+ *
+ * A failed Seed keeps a Seed of its own: it stays waiting, and the next run
+ * tries it first. A blocked Seed is the other kind — the vendor refused the
+ * Prompt itself, so retrying is pointless — and it is named rather than folded
+ * into `ok: false`, because a caller showing these live has to tell a Seed worth
+ * running again from one that is finished.
+ */
 export type SeedEvent = {
   kind: "seed";
   seed: number;
   ok: boolean;
+  /** True when no run will ever generate this Seed, because its Prompt was refused. */
+  blocked: boolean;
   /** Why it failed. Present when it did. */
   message?: string;
 };
@@ -50,21 +61,57 @@ export type PromptEvent = {
   prompt: string;
 };
 
+/**
+ * How the run reports that it did not do quite what it was asked, because a limit
+ * is not the caller's to lift: the request asked for more Frames at once than this
+ * Provider will take, and the run took what it will take and said so. Reported only
+ * when it actually clamps, so a run asked for something already under the ceiling
+ * is not told about a clamp that did not happen — a note about a substitution that
+ * did not take place is the same defect as a substitution that went unreported.
+ */
+export type ClampEvent = {
+  kind: "clamp";
+  /** What was reduced. Named because a run has more than one thing it could be. */
+  what: "concurrency";
+  /** What the caller asked for. */
+  asked: number;
+  /** What the run will do instead. */
+  running: number;
+};
+
 /** Everything the run reports, in the order it happened. */
-export type ProgressEvent = StartEvent | SeedEvent | PromptEvent;
+export type ProgressEvent = StartEvent | ClampEvent | SeedEvent | PromptEvent;
 
 /**
  * What one run was asked to do. Every value is concrete: the run never has to be
  * told what "ten" means. The default generation policy that callers start from
  * is stated once in `core/policy.ts`, beside this module, and each caller
  * overrides what it means to override — so a dry run is not a default of
- * anything's, and the run itself holds no opinion about any value.
+ * anything's, and the run itself holds no opinion about any value. The one
+ * exception is the concurrency, which the run does hold an opinion about, and
+ * only because the Provider's rate is a fact about the vendor rather than about
+ * the run: the ceiling is handed in and enforced here, so both callers inherit
+ * it instead of each keeping a copy that can stop being true.
  */
 export type RunRequest = {
   /** How many Seeds to claim. Waiting Seeds are finished before fresh ones. */
   count: number;
   /** How many Frames to generate at once. At least one worker always runs. */
   concurrency: number;
+  /**
+   * The most Frames this Provider will take at once. The run clamps to it and
+   * says so when it clamps, so the ceiling is one line of output rather than a
+   * wall of failures nobody can explain. Required rather than defaulted, for the
+   * same reason `generate` is: this module names no vendor, so it cannot work out
+   * a ceiling for one.
+   */
+  maxConcurrency: number;
+  /**
+   * Which Provider makes the Frames. Recorded in the Manifest beside the model,
+   * which is the one place the run knows a Provider made anything at all: the
+   * Generator is handed what to make and never who is making it.
+   */
+  provider: string;
   /** The model to generate with. Handed to the Generator and recorded in the Manifest. */
   model: string;
   /** Image shape, handed to the Generator. */
@@ -95,7 +142,7 @@ export type RunRequest = {
 };
 
 /** What a run came to, for the caller to render or refuse on. */
-export type RunResult = { done: number; failed: number };
+export type RunResult = { done: number; failed: number; blocked: number };
 
 /**
  * Claims Seeds, generates Frames, records Attempts, and reports what happened.
@@ -136,8 +183,18 @@ export async function run(request: RunRequest): Promise<RunResult> {
     ...(todo.length ? { range: { first: todo[0], last: todo[todo.length - 1] } } : {}),
   });
 
+  // How many Frames this run makes at once. Clamped here rather than in either
+  // caller, because a ceiling is the Provider's and there are two callers: the
+  // copy one of them keeps is the copy that stops being true. The floor of one
+  // worker is not a ceiling and is not announced, since a request for none of
+  // them was never asking for the rate to be honoured.
+  const running = Math.min(Math.max(1, request.concurrency), Math.max(1, request.maxConcurrency));
+  if (running < request.concurrency)
+    report({ kind: "clamp", what: "concurrency", asked: request.concurrency, running });
+
   let done = 0;
   let failed = 0;
+  let blocked = 0;
   let next = 0;
 
   async function worker() {
@@ -156,20 +213,38 @@ export async function run(request: RunRequest): Promise<RunResult> {
         });
         // In this order, because it is the order a reader depends on: the Frame
         // is on disk before it is counted, and counted before it is reported.
-        await folder.writeFrame({ seed, buffer, model: request.model, prompt });
+        await folder.writeFrame({
+          seed,
+          buffer,
+          provider: request.provider,
+          model: request.model,
+          prompt,
+        });
         done++;
-        report({ kind: "seed", seed, ok: true });
+        report({ kind: "seed", seed, ok: true, blocked: false });
       } catch (err) {
-        failed++;
+        // A Provider reports a refusal as a code rather than as prose, so this
+        // decision cannot be changed by rewording a message. Everything else is
+        // a failure the next run might clear, and the Seed keeps waiting.
+        const isBlocked = err instanceof GenerationFailure && err.code === "prompt-refused";
         const error = err instanceof Error ? err.message : String(err);
-        // Recorded before it is reported, so a Seed reported as failed is on
-        // the record as failed and keeps waiting for the next run.
-        folder.recordAttempt({ seed, model: request.model, prompt, status: "failed", error });
-        report({ kind: "seed", seed, ok: false, message: error });
+        if (isBlocked) blocked++;
+        else failed++;
+        // Recorded before it is reported, so a Seed reported as finished is on
+        // the record as finished, and one reported as failed keeps waiting.
+        folder.recordAttempt({
+          seed,
+          provider: request.provider,
+          model: request.model,
+          prompt,
+          status: isBlocked ? "blocked" : "failed",
+          error,
+        });
+        report({ kind: "seed", seed, ok: false, blocked: isBlocked, message: error });
       }
     }
   }
 
-  await Promise.all(Array.from({ length: Math.max(1, request.concurrency) }, worker));
-  return { done, failed };
+  await Promise.all(Array.from({ length: running }, worker));
+  return { done, failed, blocked };
 }
