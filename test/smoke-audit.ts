@@ -297,9 +297,12 @@ export function runAudit(): void {
     sources.get(file) ?? readFileSync(join(repoRoot, file), "utf8");
   // The run's own text and every module it stands on. Comments are not code, so
   // a module that says in prose that it prints is not printing.
+  // The vendor half names every vendor rather than the first one this file was
+  // written for. A guard that stops guarding the moment it first matters reads
+  // as coverage, so adding a vendor here is part of adding one to the registry.
   const narrates = (sources: Map<string, string>, entry: string): string[] =>
     [entry, ...graphFrom(entry, sources)].filter((f) =>
-      /console\.|@google\/genai/.test(code(textOf(sources, f))));
+      /console\.|@google\/genai|\bfrom\s+["']openai["']/.test(code(textOf(sources, f))));
   const runGraph = graphFrom(RUN, sourceText);
   const narrators = narrates(sourceText, RUN);
   results.push(check(

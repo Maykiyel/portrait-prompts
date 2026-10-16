@@ -13,7 +13,7 @@ import {
   run, type GenOptions, type Generator, type PromptEvent, type ProgressEvent, type RunRequest, type SeedEvent,
   type StartEvent,
 } from "../core/generate";
-import { MODELS } from "../core/gemini";
+import { MAX_CONCURRENCY, maxConcurrencyFor, providers, sizeFor } from "../core/providers";
 import { policy } from "../core/policy";
 import { generateImages, parseArgs } from "../cli/generate";
 import { importImages } from "../cli/import-images";
@@ -27,7 +27,7 @@ import { runAudit } from "./smoke-audit";
 import { runCliContract } from "./smoke-cli";
 import "./smoke-classifiers";
 import {
-  asyncCode, bad, captureOutput, check, errorCode, good, jobOf, promptFiles, repoRoot, results,
+  asyncCode, bad, captureOutput, check, errorCode, good, jobOf, promptFiles, refused, repoRoot, results, withGenerators,
   settleJob, streamBytes,
 } from "./smoke-harness";
 
@@ -63,6 +63,9 @@ const apiFolder = openOutputFolder(out, "");
 const apiRequest = (over: Partial<RunRequest>, generate: Generator = good): RunRequest => ({
   count: 1,
   concurrency: 1,
+  // A provider no registry holds, for the same reason the model is one no
+  // vendor has: the run is told what to make, never who makes it.
+  provider: "fake-provider",
   model: "fake-model",
   aspectRatio: policy.aspectRatio,
   imageSize: policy.imageSize,
@@ -594,7 +597,7 @@ try {
 // no import ordering: the two lines below could sit in any order.
 const promptDir = mkdtempSync(join(tempBase, "portrait-api-prompts-"));
 try {
-  const store = createStore({ outDir: promptDir, salt: "" });
+  const store = createStore({ outDir: promptDir, salt: "" }, providers);
   const promptFolder = openOutputFolder(promptDir, "");
   promptFolder.issueSeeds(1);
   const withoutNegative = store.getPending(false);
@@ -630,7 +633,7 @@ try {
   const seeded = openOutputFolder(routeDir, "route-salt");
   seeded.issueSeeds(3); // Seeds 1 to 3 are waiting
   await seeded.importFrames([{ name: "one.png", buffer: await good() }], [1]);
-  const api = createApp({ outDir: routeDir, salt: "route-salt" }, good);
+  const api = createApp({ outDir: routeDir, salt: "route-salt" }, withGenerators({ gemini: good }));
   // A route that raises each code with a message nobody would ever write, so the
   // status can only have come from the code.
   for (const code of codes)
@@ -644,7 +647,7 @@ try {
     form.append("seeds", JSON.stringify(seeds));
     return post("/api/import", form);
   };
-  const request: import("../shared/api-types").GenerateRequest = { count: 1, model: "flash", size: "1K", concurrency: 1, useNegative: false };
+  const request: import("../shared/api-types").GenerateRequest = { count: 1, provider: "gemini", model: "flash", size: "1K", concurrency: 1, useNegative: false };
 
   results.push(check("one table maps every ArchiveErrorCode to a status, and nothing keys on text",
     codes.length === 6 && codes.every((code) => typeof STATUS_BY_CODE[code] === "number")));
@@ -663,10 +666,10 @@ try {
   ));
 
   const status = await api.request("/api/status");
-  const told = (await status.json()) as { next: number | null; waiting: number | null; done: number; saltSet: boolean; hasApiKey: boolean; problem?: string };
+  const told = (await status.json()) as { next: number | null; waiting: number | null; done: number; saltSet: boolean; providers: { id: string; hasApiKey: boolean }[]; problem?: string };
   results.push(check("the status route reports the folder and still says whether an API key is set",
     status.status === 200 && told.next === 4 && told.waiting === 2 && told.done === 1 &&
-    told.saltSet && told.hasApiKey === false && told.problem === undefined));
+    told.saltSet && told.providers.every((p) => p.hasApiKey === false) && told.problem === undefined));
 
   const listed = (await (await api.request("/api/images")).json()) as { seed: number; source: string; version: string; prompt: string }[];
   results.push(check("the Frame list comes back through the route with its provenance",
@@ -691,7 +694,7 @@ try {
   results.push(check("an impossible Seed is refused with the invalid-Seed status",
     (await api.request("/api/images/0/file")).status === STATUS_BY_CODE["invalid-seed"]));
   results.push(check("a mismatched salt is refused with the salt-mismatch status",
-    (await createApp({ outDir: routeDir, salt: "wrong-salt" }, good)
+    (await createApp({ outDir: routeDir, salt: "wrong-salt" }, withGenerators({ gemini: good }))
       .request("/api/prompts/pending")).status === STATUS_BY_CODE["salt-mismatch"]));
 
   const partial = await images(
@@ -730,7 +733,7 @@ try {
   const noKey = await api.request("/api/generate", { method: "POST", body: JSON.stringify(request) });
   results.push(check("the Job refuses to start without an API key",
     noKey.status === 400 && ((await noKey.json()) as { error: string }).error.includes("GEMINI_API_KEY")));
-  const busy = refusalFor({ status: "running", total: 0, done: 0, failed: 0, log: [] }, true, request);
+  const busy = refusalFor({ status: "running", total: 0, done: 0, failed: 0, blocked: 0, log: [] }, providers, request);
   results.push(check("the Job refuses to start while one is running",
     busy?.status === 409 && busy.message === "A job is already running"));
 
@@ -747,7 +750,7 @@ try {
   // the order of the work, and with more than one worker that is a race rather
   // than a fact about the Job. Concurrency itself is the run's business and is
   // exercised where a result is what matters, not an order.
-  const startedAtOnce = (await (await start({ count: 2, model: "flash", size: "1K", concurrency: 1, useNegative: false })).json()) as JobState;
+  const startedAtOnce = (await (await start({ count: 2, provider: "gemini", model: "flash", size: "1K", concurrency: 1, useNegative: false })).json()) as JobState;
   results.push(check(
     "starting a Job answers at once, running, with the total the run reported",
     startedAtOnce.status === "running" && startedAtOnce.total === 2 && startedAtOnce.done === 0 &&
@@ -768,10 +771,10 @@ try {
   // over one dataset are legitimate, and each holds its own Job, so this one is
   // polled through its own route: what is under test here is the translation,
   // and a Job is asked about through the app that owns it.
-  const failingApi = createApp({ outDir: routeDir, salt: "route-salt" }, bad);
+  const failingApi = createApp({ outDir: routeDir, salt: "route-salt" }, withGenerators({ gemini: bad }));
   const startFailing = (body: unknown) =>
     failingApi.request("/api/generate", { method: "POST", body: JSON.stringify(body) });
-  await startFailing({ count: 2, model: "flash", size: "1K", concurrency: 1, useNegative: false });
+  await startFailing({ count: 2, provider: "gemini", model: "flash", size: "1K", concurrency: 1, useNegative: false });
   const faulted = await settleJob(failingApi);
   results.push(check(
     "a Job that fails counts the failures and logs the Seeds that failed, which stay waiting",
@@ -780,7 +783,7 @@ try {
         "5:false:fake quota error,4:false:fake quota error" &&
       seeded.waitingSeeds().join() === "4,5" && seeded.status().next === 6,
   ));
-  await startFailing({ count: 60, model: "flash", size: "1K", concurrency: 1, useNegative: false });
+  await startFailing({ count: 60, provider: "gemini", model: "flash", size: "1K", concurrency: 1, useNegative: false });
   const capped = await settleJob(failingApi);
   results.push(check(
     "the per-Seed log keeps the newest fifty entries and lets the rest go",
@@ -794,7 +797,7 @@ try {
   // refused by the folder, so the run never gets going and the Job says so
   // rather than reporting a Job that quietly did nothing.
   writeFileSync(join(routeDir, "cursor.json"), "{ corrupt");
-  await start({ count: 1, model: "flash", size: "1K", concurrency: 1, useNegative: false });
+  await start({ count: 1, provider: "gemini", model: "flash", size: "1K", concurrency: 1, useNegative: false });
   const broken = await settleJob(api);
   results.push(check(
     "a run that cannot start leaves the Job in error with what went wrong",
@@ -843,7 +846,7 @@ const asRun = (spy: ReturnType<typeof policySpy>) => ({
   pool: spy.calls.most,
   seeds: spy.seen.length,
 });
-const genOptions: (keyof GenOptions)[] = ["model", "aspectRatio", "imageSize"];
+const genOptions: (keyof GenOptions)[] = ["provider", "model", "aspectRatio", "imageSize"];
 const policyBase = mkdtempSync(join(tempBase, "portrait-policy-"));
 writeFileSync(join(policyBase, "template.txt"), "# policy-v1\nPortrait of {age}.");
 writeFileSync(join(policyBase, "negative.txt"), "policy exclusions");
@@ -858,26 +861,25 @@ try {
   process.chdir(policyBase);
 
   const cliSpy = policySpy();
-  const cliLines = await captureOutput(() => generateImages(parseArgs([]), cliSpy.generate));
+  const cliLines = await captureOutput(() => generateImages(parseArgs([]), withGenerators({ gemini: cliSpy.generate })));
   const cliRun = asRun(cliSpy);
 
   // The wire request names a model key rather than a vendor name, so it can
   // only repeat the policy by looking the key up. And it carries no aspect
   // ratio at all, which is what leaves that one value to the Job's policy.
-  const modelKey = (Object.keys(MODELS) as GenerateRequest["model"][]).find(
-    (key) => MODELS[key] === policy.model,
-  );
+  const modelKey = providers.gemini.models.find((m) => m.model === policy.model)?.id;
   if (modelKey === undefined)
     throw new Error(`the policy names a model a request cannot ask for: ${policy.model}`);
   const repeating: GenerateRequest = {
     count: policy.count,
+    provider: policy.provider,
     model: modelKey,
-    size: policy.imageSize as GenerateRequest["size"],
+    size: policy.imageSize,
     concurrency: policy.concurrency,
     useNegative: policy.useNegative,
   };
   const jobSpy = policySpy();
-  const jobApp = createApp({ outDir: join(policyBase, "job-archive"), salt: "" }, jobSpy.generate);
+  const jobApp = createApp({ outDir: join(policyBase, "job-archive"), salt: "" }, withGenerators({ gemini: jobSpy.generate }));
   await jobApp.request("/api/generate", { method: "POST", body: JSON.stringify(repeating) });
   const jobState = await settleJob(jobApp);
   const jobRun = asRun(jobSpy);
@@ -906,7 +908,13 @@ try {
   results.push(check(
     "each command-line flag overrides the one value it names and leaves the rest on the policy",
     allFlags.start === 5 && allFlags.count === 3 && allFlags.concurrency === 7 &&
-      allFlags.model === MODELS.lite && allFlags.aspectRatio === "3:4" && allFlags.imageSize === "2K" &&
+      allFlags.model === providers.gemini.models.find((m) => m.id === "lite")?.model &&
+      allFlags.aspectRatio === "3:4" &&
+      // `--size 2K` did not survive, and that is the Provider's answer rather than
+      // the command line's: lite has exactly one size, so asking for 2K resolved
+      // to the size that model has instead of being refused, because there was
+      // nothing to substitute.
+      allFlags.imageSize === "1K" &&
       allFlags.outDir === "somewhere-else" && allFlags.useNegative === false && allFlags.dryRun === true &&
       // One flag on its own, which is the case that matters: everything it does
       // not name is still the policy's, because the command line starts from
@@ -914,21 +922,30 @@ try {
       // are its own — where the dataset lives, and whether to look before
       // spending — and neither is generation policy.
       genOptions.every((k) => oneFlag[k] === policy[k]) && oneFlag.count === 3 &&
-      oneFlag.outDir === "out" && oneFlag.dryRun === false && oneFlag.start === undefined,
+      oneFlag.outDir === "out" && oneFlag.dryRun === false && oneFlag.start === undefined &&
+      // And a flag that names another Provider, which is what makes
+      // `--provider` more than a spelling of the policy's value.
+      parseArgs(["--provider", "openai", "--model", "sunburst"]).provider === "openai" &&
+      parseArgs(["--provider", "openai", "--model", "sunburst"]).model ===
+        providers.openai.models.find((m) => m.id === "sunburst")?.model &&
+      // The two flags resolve after the loop rather than where they are read, so
+      // this order is the same answer as the one above.
+      parseArgs(["--model", "sunburst", "--provider", "openai"]).model ===
+        providers.openai.models.find((m) => m.id === "sunburst")?.model,
   ));
 
   const overSpy = policySpy();
-  const overApp = createApp({ outDir: join(policyBase, "override-archive"), salt: "" }, overSpy.generate);
+  const overApp = createApp({ outDir: join(policyBase, "override-archive"), salt: "" }, withGenerators({ gemini: overSpy.generate }));
   await overApp.request("/api/generate", {
     method: "POST",
-    body: JSON.stringify({ count: 2, model: "pro", size: "2K", concurrency: 1, useNegative: false }),
+    body: JSON.stringify({ count: 2, provider: "gemini", model: "pro", size: "2K", concurrency: 1, useNegative: false }),
   });
   const overState = await settleJob(overApp);
   results.push(check(
     "the Job lets the request override what it names and takes the policy for what it cannot",
-    overState.status === "done" && overState.total === 2 && overState.model === MODELS.pro &&
+    overState.status === "done" && overState.total === 2 && overState.model === providers.gemini.models.find((m) => m.id === "pro")?.model &&
       overSpy.seen.length === 2 && overSpy.calls.most === 1 &&
-      overSpy.seen[0].opts.model === MODELS.pro && overSpy.seen[0].opts.imageSize === "2K" &&
+      overSpy.seen[0].opts.model === providers.gemini.models.find((m) => m.id === "pro")?.model && overSpy.seen[0].opts.imageSize === "2K" &&
       !overSpy.seen[0].prompt.includes("\n\nAvoid:") &&
       // The aspect ratio is the one value a request has no way to name, so it
       // is the one value here that can only have come from the policy.
@@ -995,7 +1012,7 @@ try {
   // Fixture setup asks the module directly; every assertion below is an HTTP
   // response from an app.
   process.chdir(join(pairBase, "alpha-prompt-files"));
-  const alpha = createApp({ outDir: alphaDir, salt: "alpha" }, good);
+  const alpha = createApp({ outDir: alphaDir, salt: "alpha" }, withGenerators({ gemini: good }));
   const alphaFolder = openOutputFolder(alphaDir, "alpha");
   alphaFolder.issueSeeds(2);
   await alphaFolder.importFrames([{ name: "alpha.png", buffer: await good() }], [1]);
@@ -1009,7 +1026,7 @@ try {
   // The second app gets a different root, a different Seed salt and different
   // Prompt files. Nothing about the first app may move.
   process.chdir(join(pairBase, "beta-prompt-files"));
-  const beta = createApp({ outDir: betaDir, salt: "" }, good);
+  const beta = createApp({ outDir: betaDir, salt: "" }, withGenerators({ gemini: good }));
   openOutputFolder(betaDir, "").issueSeeds(1); // Seed 1 waiting, no Frame
   // The second app is asked first, on purpose: if the archive were one per
   // process, answering the beta app would be what moved the alpha app, and the
@@ -1035,12 +1052,12 @@ try {
   // running. The alpha and beta apps above are the control: alpha shares a
   // dataset with the first of these two and beta with the second, and neither
   // is ever given a Job at all.
-  const alphaJob = createApp({ outDir: alphaDir, salt: "alpha" }, held);
-  const betaJob = createApp({ outDir: betaDir, salt: "" }, held);
+  const alphaJob = createApp({ outDir: alphaDir, salt: "alpha" }, withGenerators({ gemini: held }));
+  const betaJob = createApp({ outDir: betaDir, salt: "" }, withGenerators({ gemini: held }));
   const startOn = (app: ReturnType<typeof createApp>) =>
     app.request("/api/generate", {
       method: "POST",
-      body: JSON.stringify({ count: 1, model: "flash", size: "1K", concurrency: 1, useNegative: false }),
+      body: JSON.stringify({ count: 1, provider: "gemini", model: "flash", size: "1K", concurrency: 1, useNegative: false }),
     });
   process.env.GEMINI_API_KEY = "a-key-the-fake-Generator-never-uses";
   const answeredAtOnce = await startOn(alphaJob);
@@ -1099,6 +1116,159 @@ try {
   if (savedJobKey === undefined) delete process.env.GEMINI_API_KEY;
   else process.env.GEMINI_API_KEY = savedJobKey;
   rmSync(pairBase, { recursive: true, force: true });
+}
+
+// ---- Providers -------------------------------------------------------------
+// Everything above drives the run with a Generator named directly, which no
+// browser does. These drive it the way a request does: naming a Provider and one
+// of its models, and getting an answer from the registry rather than from a
+// constant written in this file.
+
+results.push(check(
+  "the registry names a default Provider, and more than one, and the policy asks for a model it holds",
+  providers[policy.provider] !== undefined && Object.keys(providers).length > 1 &&
+    providers[policy.provider].models.some((m) => m.model === policy.model),
+));
+
+results.push(check(
+  "every Provider names the key it needs and offers only sizes it can make",
+  Object.values(providers).every((p) =>
+    p.keyVar.startsWith(p.id.toUpperCase()) && p.sizes.length > 0 &&
+    p.models.every((m) => m.fixedSize === null || p.sizes.includes(m.fixedSize))) &&
+    providers.openai.sizes.length < providers.gemini.sizes.length,
+));
+
+results.push(check(
+  "a size one Provider cannot make is refused, while a model with one size resolves to it",
+  (() => {
+    const openAi = providers.openai;
+    const gemini = providers.gemini;
+    const refusedPlan = sizeFor(openAi, openAi.models[0], "4K");
+    const oneSized = gemini.models.find((m) => m.fixedSize !== null);
+    // Asked for the only size that model has, there is nothing to substitute,
+    // so it resolves rather than refusing.
+    const resolved = oneSized ? sizeFor(gemini, oneSized, "4K") : undefined;
+    return !refusedPlan.ok && refusedPlan.refused.length > 0 &&
+      sizeFor(gemini, gemini.models[0], "4K").ok &&
+      resolved !== undefined && resolved.ok && resolved.size === oneSized?.fixedSize;
+  })(),
+));
+
+results.push(check(
+  "concurrency is clamped to what a Provider publishes rather than to a guess",
+  maxConcurrencyFor(providers.gemini) === MAX_CONCURRENCY &&
+    maxConcurrencyFor(providers.openai) === Math.min(MAX_CONCURRENCY, providers.openai.imagesPerMinute!),
+));
+
+// A refusal is terminal and an exhausted quota is not, and the two must not
+// share a state. Driven through the Job rather than the run, because the claim
+// under test is about what the folder believes afterwards.
+const blockedBase = mkdtempSync(join(tempBase, "portrait-blocked-"));
+try {
+  const blockedDir = join(blockedBase, "blocked-archive");
+  const blockedApp = createApp({ outDir: blockedDir, salt: "" }, withGenerators({ gemini: refused }));
+  process.env.GEMINI_API_KEY = "a-key-the-fake-Generator-never-uses";
+  await blockedApp.request("/api/generate", {
+    method: "POST",
+    body: JSON.stringify({ count: 1, provider: "gemini", model: "flash", size: "1K", concurrency: 1, useNegative: false }),
+  });
+  const blockedState = await settleJob(blockedApp);
+  const blockedFolder = openOutputFolder(blockedDir, "");
+  results.push(check(
+    "a refused Prompt finishes the Seed, and the Job says blocked rather than failed",
+    blockedState.status === "done" && blockedState.blocked === 1 &&
+      blockedState.failed === 0 && blockedState.done === 0 &&
+      blockedState.log[0]?.blocked === true && blockedFolder.status().blocked === 1,
+  ));
+
+  results.push(check(
+    "a Seed the vendor refused is never offered again, and is not counted as waiting",
+    blockedFolder.waitingSeeds().length === 0 && blockedFolder.hasFrame(1) === false &&
+      blockedFolder.status().waiting === 0,
+  ));
+
+  // OpenAI, end to end, naming its Provider the way a request does.
+  const openAiDir = join(blockedBase, "openai-archive");
+  const openAiApp = createApp({ outDir: openAiDir, salt: "" }, withGenerators({ openai: good }));
+  process.env.OPENAI_API_KEY = "a-key-the-fake-Generator-never-uses";
+  await openAiApp.request("/api/generate", {
+    method: "POST",
+    body: JSON.stringify({ count: 1, provider: "openai", model: "flare", size: "2K", concurrency: 1, useNegative: false }),
+  });
+  const openAiState = await settleJob(openAiApp);
+  const openAiFrame = openOutputFolder(openAiDir, "").listFrames()[0];
+  results.push(check(
+    "a Frame made through OpenAI records OpenAI beside the model it names",
+    openAiState.status === "done" && openAiState.provider === "openai" &&
+      openAiFrame?.provider === "openai" &&
+      openAiFrame.model === providers.openai.models.find((m) => m.id === "flare")?.model,
+  ));
+
+  const openAiStatus = (await (await openAiApp.request("/api/status")).json()) as {
+    providers: { id: string; hasApiKey: boolean }[];
+  };
+  results.push(check(
+    "the status route offers every Provider with its key presence, never the key itself",
+    openAiStatus.providers.length === Object.keys(providers).length &&
+      openAiStatus.providers.every((p) => typeof p.hasApiKey === "boolean") &&
+      openAiStatus.providers.find((p) => p.id === "openai")?.hasApiKey === true,
+  ));
+
+  // A Provider the registry does not hold, and one whose key is not set. Both
+  // are refused by name, and neither reaches a vendor.
+  const strangerApp = createApp({ outDir: join(blockedBase, "stranger-archive"), salt: "" }, withGenerators({ openai: good }));
+  const stranger = await strangerApp.request("/api/generate", {
+    method: "POST",
+    body: JSON.stringify({ count: 1, provider: "nope", model: "flare", size: "1K", concurrency: 1, useNegative: false }),
+  });
+  results.push(check(
+    "a request naming a Provider the registry does not hold is refused by name",
+    stranger.status === 400 && ((await stranger.json()) as { error: string }).error.includes("nope"),
+  ));
+
+  const tooBig = await openAiApp.request("/api/generate", {
+    method: "POST",
+    body: JSON.stringify({ count: 1, provider: "openai", model: "flare", size: "4K", concurrency: 1, useNegative: false }),
+  });
+  const tooBigError = ((await tooBig.json()) as { error: string }).error;
+  results.push(check(
+    "a size OpenAI cannot make is refused by the route, costing nothing to discover",
+    // The refusal names the real limit rather than just saying no, so the
+    // message is the answer and not a dead end — and it says out loud that the
+    // result is smaller than the equivalent tier elsewhere.
+    tooBig.status === 400 && tooBigError.includes("1536x2304") && tooBigError.includes("smaller"),
+  ));
+
+  process.env.OPENAI_API_KEY = "";
+  const noKeyRequest = await openAiApp.request("/api/generate", {
+    method: "POST",
+    body: JSON.stringify({ count: 1, provider: "openai", model: "flare", size: "1K", concurrency: 1, useNegative: false }),
+  });
+  results.push(check(
+    "the Job refuses to start without that Provider's own key, and names which one",
+    noKeyRequest.status === 400 &&
+      ((await noKeyRequest.json()) as { error: string }).error.includes("OPENAI_API_KEY"),
+  ));
+
+  // And with the key back, so the refusal above is proved to be about the size
+  // and not about the key that was missing a moment ago.
+  process.env.OPENAI_API_KEY = "a-key-the-fake-Generator-never-uses";
+  const tooBigWithKey = await openAiApp.request("/api/generate", {
+    method: "POST",
+    body: JSON.stringify({ count: 1, provider: "openai", model: "flare", size: "4K", concurrency: 1, useNegative: false }),
+  });
+  results.push(check(
+    "with the key present, the same request is refused for the size alone",
+    tooBigWithKey.status === 400 &&
+      ((await tooBigWithKey.json()) as { error: string }).error.includes("1536x2304"),
+  ));
+} finally {
+  if (savedJobKey === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = savedJobKey;
+  const savedOpenAiKey = process.env.OPENAI_API_KEY;
+  if (savedOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = savedOpenAiKey;
+  rmSync(blockedBase, { recursive: true, force: true });
 }
 
 for (const d of [out, out2, inDir, "out-smoke3"]) rmSync(d, { recursive: true, force: true });

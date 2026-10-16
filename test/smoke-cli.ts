@@ -15,7 +15,8 @@ import { generateImages } from "../cli/generate";
 import { importImages } from "../cli/import-images";
 import { openOutputFolder } from "../core/output-folder";
 import { policy } from "../core/policy";
-import { asyncCode, bad, captureOutput, check, good, promptFiles, repoRoot, results, streamBytes } from "./smoke-harness";
+import { providers } from "../core/providers";
+import { asyncCode, bad, captureOutput, check, good, promptFiles, repoRoot, results, streamBytes, withGenerators } from "./smoke-harness";
 
 export async function runCliContract(): Promise<void> {
   const cliVersion = promptFiles().version;
@@ -31,7 +32,7 @@ export async function runCliContract(): Promise<void> {
       const child = execFile(
         process.execPath,
         ["--import", "tsx", ...preloads.flatMap((p) => ["--import", p]), script, ...args],
-        { cwd: repoRoot, env: { ...process.env, SEED_SALT: "", GEMINI_API_KEY: "", ...env } },
+        { cwd: repoRoot, env: { ...process.env, SEED_SALT: "", GEMINI_API_KEY: "", OPENAI_API_KEY: "", ...env } },
       );
       child.stdout?.on("data", (c: Buffer) => (text += c.toString()));
       child.stderr?.on("data", (c: Buffer) => (errText += c.toString()));
@@ -165,7 +166,7 @@ export async function runCliContract(): Promise<void> {
   rmSync(runOut, { recursive: true, force: true });
   // One worker, so the order of these lines is fixed rather than a race.
   const failLines = await captureOutput(() =>
-    generateImages({ ...policy, count: 3, concurrency: 1, outDir: runOut, dryRun: false, salt: "" }, bad));
+    generateImages({ ...policy, count: 3, concurrency: 1, outDir: runOut, dryRun: false, salt: "" }, withGenerators({ gemini: bad })));
   const runFolder = openOutputFolder(runOut, "");
   results.push(check(
     "a failing run prints the same lines and leaves every Seed waiting",
@@ -182,7 +183,7 @@ export async function runCliContract(): Promise<void> {
   ));
   // One worker, so the order of these lines is fixed rather than a race.
   const retryLines = await captureOutput(() =>
-    generateImages({ ...policy, count: 2, concurrency: 1, outDir: runOut, dryRun: false, salt: "" }, good));
+    generateImages({ ...policy, count: 2, concurrency: 1, outDir: runOut, dryRun: false, salt: "" }, withGenerators({ gemini: good })));
   results.push(check(
     "the next run finishes Waiting Seeds first and does not advance the counter",
     retryLines.join("\n") === [
@@ -195,7 +196,7 @@ export async function runCliContract(): Promise<void> {
       runFolder.status().done === 2 && runFolder.status().failed === 1,
   ));
   const dryRunLines = await captureOutput(() =>
-    generateImages({ ...policy, count: 2, outDir: runOut, dryRun: true, salt: "" }, good),
+    generateImages({ ...policy, count: 2, outDir: runOut, dryRun: true, salt: "" }, withGenerators({ gemini: good })),
   );
   results.push(check(
     "a dry run prints the Prompt, moves no counter and writes no Frame",
@@ -282,6 +283,47 @@ export async function runCliContract(): Promise<void> {
         ].join("\n") &&
         !noKey.error.includes("the smoke suite must not use the network"),
     ));
+    // The same contract for the second Provider, byte for byte apart from the
+    // name of its key. It cannot be asserted in process, because every test here
+    // passes a fake Generator that never reads a key: only a spawned command
+    // reaches the real client, and only the real client has a key message.
+    const openAiOut = "out-smoke15";
+    rmSync(openAiOut, { recursive: true, force: true });
+    const openAiFolder = openOutputFolder(openAiOut, "");
+    const openAiNoKey = await spawnCli(
+      "cli/generate.ts",
+      ["--provider", "openai", "--model", "flare", "--count", "2", "--concurrency", "1", "--out", openAiOut],
+      {},
+      [noNetwork],
+    );
+    results.push(check(
+      "a Provider with no key of its own fails the same way, and says which key",
+      openAiNoKey.code === 1 &&
+        // The header carries the model the flag named, resolved through that
+        // Provider's catalog rather than Gemini's.
+        openAiNoKey.output === [
+          `${cliVersion} | ${providers.openai.models.find((m) => m.id === "flare")?.model} | 2 to generate, 0 already done | seeds 1 to 2`,
+          "",
+          `Done. 0 ok, 2 failed. Output in ${openAiOut}/`,
+          "Failed seeds stay pending and run first next time.",
+          "",
+        ].join("\n") &&
+        openAiNoKey.error === [
+          "[1] failed: OPENAI_API_KEY is not set. Copy .env.example to .env and add your key.",
+          "[2] failed: OPENAI_API_KEY is not set. Copy .env.example to .env and add your key.",
+          "",
+        ].join("\n") &&
+        // The Gemini key being set in the environment would not help here: the
+        // Provider asks for its own, and the child's environment has neither.
+        !openAiNoKey.error.includes("GEMINI_API_KEY") &&
+        !openAiNoKey.error.includes("the smoke suite must not use the network"),
+    ));
+    results.push(check(
+      "both no-key runs left every Seed waiting, so neither spent a Seed to find out",
+      openAiFolder.waitingSeeds().join() === "1,2" && openAiFolder.status().failed === 2,
+    ));
+    rmSync(openAiOut, { recursive: true, force: true });
+
     results.push(check(
       "the non-zero exit is the run's own verdict: every Seed stays waiting and every failure is recorded",
       // Nothing was thrown out of the command: the run caught each failure,
@@ -318,7 +360,7 @@ export async function runCliContract(): Promise<void> {
   results.push(check(
     "the run still refuses an unreadable counter instead of starting again",
     await asyncCode(() =>
-      generateImages({ ...policy, count: 1, outDir: cliOut, dryRun: true, salt: "" }, good)) ===
+      generateImages({ ...policy, count: 1, outDir: cliOut, dryRun: true, salt: "" }, withGenerators({ gemini: good }))) ===
       "unreadable-counter",
   ));
 

@@ -1,5 +1,8 @@
 import { openOutputFolder, type OutputFolder } from "../core/output-folder";
-import type { ImageItem, ImportResult, PromptsResponse, Status } from "../shared/api-types";
+import { hasKey, maxConcurrencyFor, type ProviderRegistry } from "../core/providers";
+import type {
+  ImageItem, ImportResult, PromptsResponse, ProviderInfo, Status,
+} from "../shared/api-types";
 
 /**
  * An app is pointed at one dataset: an output folder root, and the Seed salt that
@@ -31,13 +34,29 @@ export type Store = {
  * would take turns re-opening each other's archive, and each would answer with
  * the Prompt files whichever app asked last.
  */
-export function createStore({ outDir, salt }: Dataset): Store {
+export function createStore({ outDir, salt }: Dataset, registry: ProviderRegistry): Store {
   let opened: OutputFolder | undefined;
   const archive = (): OutputFolder => (opened ??= openOutputFolder(outDir, salt));
 
+  /**
+   * Every Provider the registry knows, offered to the browser so it can draw the
+   * same models and sizes the server would accept. The browser holds no list of
+   * its own, so there is no second copy in the bundle to fall behind the server.
+   * A key is reported as present or absent and never as itself.
+   */
+  const providerInfo = (): ProviderInfo[] =>
+    Object.values(registry).map((provider) => ({
+      id: provider.id,
+      label: provider.label,
+      hasApiKey: hasKey(provider),
+      sizes: [...provider.sizes],
+      models: provider.models.map(({ id, label, fixedSize }) => ({ id, label, fixedSize })),
+      maxConcurrency: maxConcurrencyFor(provider),
+    }));
+
   const getStatus = (): Status => {
-    const { version, next, done, waiting, saltSet, problem } = archive().status();
-    return { version, next, done, waiting, saltSet, problem, hasApiKey: Boolean(process.env.GEMINI_API_KEY) };
+    const { version, next, done, waiting, blocked, saltSet, problem } = archive().status();
+    return { version, next, done, waiting, blocked, saltSet, problem, providers: providerInfo() };
   };
 
   const promptsFor = (seeds: number[], useNegative: boolean): PromptsResponse =>

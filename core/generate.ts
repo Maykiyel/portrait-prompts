@@ -1,4 +1,5 @@
 import { namedSeeds, openOutputFolder } from "./output-folder";
+import { GenerationFailure } from "./errors";
 
 /**
  * The seam the run stands on: something that turns a Prompt into image bytes.
@@ -7,6 +8,8 @@ import { namedSeeds, openOutputFolder } from "./output-folder";
  * what it needs is stated here, and the vendor client implements it.
  */
 export type GenOptions = {
+  /** Which Provider made this. Recorded beside the model, because a model id on its own does not say. */
+  provider: string;
   model: string;
   aspectRatio: string;
   imageSize: string;
@@ -31,11 +34,21 @@ export type StartEvent = {
   version: string;
 };
 
-/** How the run reports one Seed's outcome. A failed Seed keeps a Seed of its own: it stays waiting. */
+/**
+ * How the run reports one Seed's outcome.
+ *
+ * A failed Seed keeps a Seed of its own: it stays waiting, and the next run
+ * tries it first. A blocked Seed is the other kind — the vendor refused the
+ * Prompt itself, so retrying is pointless — and it is named rather than folded
+ * into `ok: false`, because a caller showing these live has to tell a Seed worth
+ * running again from one that is finished.
+ */
 export type SeedEvent = {
   kind: "seed";
   seed: number;
   ok: boolean;
+  /** True when no run will ever generate this Seed, because its Prompt was refused. */
+  blocked: boolean;
   /** Why it failed. Present when it did. */
   message?: string;
 };
@@ -65,6 +78,8 @@ export type RunRequest = {
   count: number;
   /** How many Frames to generate at once. At least one worker always runs. */
   concurrency: number;
+  /** Which Provider makes the Frames. Recorded in the Manifest beside the model. */
+  provider: string;
   /** The model to generate with. Handed to the Generator and recorded in the Manifest. */
   model: string;
   /** Image shape, handed to the Generator. */
@@ -95,7 +110,7 @@ export type RunRequest = {
 };
 
 /** What a run came to, for the caller to render or refuse on. */
-export type RunResult = { done: number; failed: number };
+export type RunResult = { done: number; failed: number; blocked: number };
 
 /**
  * Claims Seeds, generates Frames, records Attempts, and reports what happened.
@@ -138,6 +153,7 @@ export async function run(request: RunRequest): Promise<RunResult> {
 
   let done = 0;
   let failed = 0;
+  let blocked = 0;
   let next = 0;
 
   async function worker() {
@@ -150,26 +166,45 @@ export async function run(request: RunRequest): Promise<RunResult> {
           continue;
         }
         const buffer = await request.generate(prompt, {
+          provider: request.provider,
           model: request.model,
           aspectRatio: request.aspectRatio,
           imageSize: request.imageSize,
         });
         // In this order, because it is the order a reader depends on: the Frame
         // is on disk before it is counted, and counted before it is reported.
-        await folder.writeFrame({ seed, buffer, model: request.model, prompt });
+        await folder.writeFrame({
+          seed,
+          buffer,
+          provider: request.provider,
+          model: request.model,
+          prompt,
+        });
         done++;
-        report({ kind: "seed", seed, ok: true });
+        report({ kind: "seed", seed, ok: true, blocked: false });
       } catch (err) {
-        failed++;
+        // A Provider reports a refusal as a code rather than as prose, so this
+        // decision cannot be changed by rewording a message. Everything else is
+        // a failure the next run might clear, and the Seed keeps waiting.
+        const isBlocked = err instanceof GenerationFailure && err.code === "prompt-refused";
         const error = err instanceof Error ? err.message : String(err);
-        // Recorded before it is reported, so a Seed reported as failed is on
-        // the record as failed and keeps waiting for the next run.
-        folder.recordAttempt({ seed, model: request.model, prompt, status: "failed", error });
-        report({ kind: "seed", seed, ok: false, message: error });
+        if (isBlocked) blocked++;
+        else failed++;
+        // Recorded before it is reported, so a Seed reported as finished is on
+        // the record as finished, and one reported as failed keeps waiting.
+        folder.recordAttempt({
+          seed,
+          provider: request.provider,
+          model: request.model,
+          prompt,
+          status: isBlocked ? "blocked" : "failed",
+          error,
+        });
+        report({ kind: "seed", seed, ok: false, blocked: isBlocked, message: error });
       }
     }
   }
 
   await Promise.all(Array.from({ length: Math.max(1, request.concurrency) }, worker));
-  return { done, failed };
+  return { done, failed, blocked };
 }
