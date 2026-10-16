@@ -316,7 +316,12 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     if (!counter || frame.seed >= counter.next || hasFrame(frame.seed))
       throw new ArchiveError("seed-not-waiting", `Seed ${frame.seed} is not waiting for a Frame`);
     mkdirSync(join(root, "raw"), { recursive: true });
-    await sharp(frame.buffer).png().toFile(rawFile(frame.seed));
+    // The bytes the vendor sent, written as they arrived. Both vendors sign their
+    // images with C2PA content credentials, and re-encoding through sharp would
+    // strip that signature — Google documents any non-C2PA modification as
+    // tampering. The Frame below is still resized, because a Frame is a fixed
+    // size by definition and carries no such claim.
+    writeFileSync(rawFile(frame.seed), frame.buffer);
     await sharp(frame.buffer).resize(768, 1152, { fit: "cover", position: "attention" }).png().toFile(frameFile(frame.seed));
     recordAttempt({ ...frame, status: "ok" });
   };
