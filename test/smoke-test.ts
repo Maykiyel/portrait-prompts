@@ -18,7 +18,10 @@ import { policyFor } from "../core/policy";
 import { generateImages, parseArgs } from "../cli/generate";
 import { importImages } from "../cli/import-images";
 import { openOutputFolder, seedLabel, type FileForImport } from "../core/output-folder";
-import { buildPrompt, pools } from "../core/sampler";
+import {
+  buildPrompt, composePrompt, derivedPlaceholders, detailPools, formatDetails, MAX_DETAILS, MIX_RATE, NO_DETAILS, pools,
+  samplePortrait,
+} from "../core/sampler";
 import { createApp, STATUS_BY_CODE } from "../server/index";
 import type { GenerateRequest, JobState } from "../shared/api-types";
 import { refusalFor } from "../server/jobs";
@@ -503,9 +506,9 @@ results.push(check("a caller supplies the salt, not the environment", buildPromp
 delete process.env.SEED_SALT;
 const salted = Array.from({ length: 50 }, (_, i) => i + 1).filter((n) => buildPrompt(template, n, "x") !== buildPrompt(template, n, "")).length;
 results.push(check("salt changes almost every seed", salted >= 48));
-// Unsalted Seed 9's Prompt before this change: preserves the plain-seed PRNG path.
+// Unsalted Seed 9's Prompt under portrait-v5: preserves the plain-seed PRNG path. Re-pin it when a pool or the template changes.
 const plain = createHash("sha256").update(buildPrompt(template, 9, "")).digest("hex");
-results.push(check("no salt matches the plain seed", plain === "210a57d95ba0d439294b0ea609484ea277514f5353b877097d8f96423df558ab"));
+results.push(check("no salt matches the plain seed", plain === "83c1038813244cf36ba7d35806d475e14f665d54fc56f4ebd76eb1f33e0003a9"));
 const guardDir = "out-smoke4";
 rmSync(guardDir, { recursive: true, force: true });
 openOutputFolder(guardDir, "").claimSeeds(2); // started with no salt
@@ -517,7 +520,10 @@ rmSync(guardDir, { recursive: true, force: true });
 
 // Template and pools
 const placeholders = new Set([...template.matchAll(/\{(\w+)\}/g)].map((m) => m[1]));
-results.push(check("every placeholder has a pool and every pool is used", [...placeholders].sort().join() === Object.keys(pools).sort().join()));
+results.push(check(
+  "every placeholder has a pool or a derived source, and every pool is used",
+  [...placeholders].sort().join() === [...Object.keys(pools), ...derivedPlaceholders].sort().join(),
+));
 const small = Object.entries(pools).filter(([k, xs]) => k !== "gender" && xs.length < 10).map(([k]) => k);
 results.push(check("each pool has 10 or more entries except gender", small.length === 0));
 const prompts = Array.from({ length: 500 }, (_, i) => buildPrompt(template, i + 1, "t"));
@@ -525,6 +531,122 @@ results.push(check("500 prompts are almost all unique", new Set(prompts).size >=
 const slips = prompts.filter((p) => /\{|\}|  | \.|,,|\b(a|an) (a|an)\b|\ba [aeiou]|\ban [^aeiou\s\d]/i.test(p));
 results.push(check("no grammar or placeholder slips in 500 prompts", slips.length === 0));
 if (slips.length) console.log("  e.g.", slips[0].split("\n")[0]);
+
+// Optional details, anatomy pools, the negative list and the version tag.
+const detailSamples = Array.from({ length: 2000 }, (_, i) => samplePortrait(i + 1, "d"));
+const detailKeys = Object.keys(detailPools);
+results.push(check("each detail pool has entries", detailKeys.every((k) => detailPools[k].length >= 3)));
+results.push(check(
+  "the anatomy pools are separate and the old eyes and feature pools are gone",
+  ["eyeColor", "eyeShape", "nose", "lips", "eyebrows"].every((k) => k in pools) && !("eyes" in pools) && !("feature" in pools),
+));
+results.push(check(
+  "the same seed and salt give the same prompt and the same details on repeat calls",
+  Array.from({ length: 50 }, (_, i) => i + 1).every((n) =>
+    buildPrompt(template, n, "r") === buildPrompt(template, n, "r") &&
+    JSON.stringify(samplePortrait(n, "r")) === JSON.stringify(samplePortrait(n, "r"))),
+));
+results.push(check(
+  "different seeds give different feature combinations",
+  new Set(detailSamples.map((x) => x.values.features)).size >= 100,
+));
+results.push(check(
+  "every detail count from zero to three occurs and none exceeds three",
+  [0, 1, 2, 3].every((n) => detailSamples.some((x) => x.details.length === n)) &&
+    detailSamples.every((x) => x.details.length <= MAX_DETAILS),
+));
+results.push(check(
+  "no category contributes twice and no detail repeats",
+  detailSamples.every((x) =>
+    new Set(x.details.map((d) => d.category)).size === x.details.length &&
+    new Set(x.details.map((d) => d.text)).size === x.details.length &&
+    x.details.every((d) => detailPools[d.category]?.includes(d.text))),
+));
+results.push(check(
+  "details from different categories appear together",
+  detailSamples.some((x) => x.details.length >= 2),
+));
+results.push(check(
+  "no details gives the fallback, and the fallback never appears next to a detail",
+  detailSamples.every((x) => (x.details.length === 0) === (x.values.features === NO_DETAILS)),
+));
+results.push(check(
+  "details follow the pool rules for age, freckled skin and asymmetry",
+  detailSamples.every((x) => {
+    const age = Number(x.values.age);
+    return x.details.every((d) =>
+      !(d.category === "ageDetail" && age < 30) &&
+      !(/acne/.test(d.text) && age > 45) &&
+      !(/freckles/.test(d.text) && /freckled/.test(x.values.skin)) &&
+      !(/asymmetry/.test(d.text) && /asymmetrical/.test(x.values.lips)));
+  }),
+));
+results.push(check(
+  "detail lists read as plain English",
+  formatDetails([]) === NO_DETAILS && formatDetails(["a"]) === "a" && formatDetails(["a", "b"]) === "a and b" &&
+    formatDetails(["a", "b", "c"]) === "a, b, and c",
+));
+results.push(check(
+  "the feature text in a prompt is plain text, not an array or a placeholder",
+  detailSamples.slice(0, 300).every((x) => !/[[\]{}]|undefined|\bnull\b/.test(x.values.features)),
+));
+const anatomyPrompts = Array.from({ length: 200 }, (_, i) => ({ s: samplePortrait(i + 1, "a"), p: buildPrompt(template, i + 1, "a") }));
+results.push(check(
+  "eye color, eye shape, nose, lips and eyebrows all reach the finished prompt",
+  anatomyPrompts.every(({ s: x, p }) =>
+    ["eyeColor", "eyeShape", "nose", "lips", "eyebrows", "features"].every((k) => p.includes(x.values[k])) &&
+    p.includes(`Their eyes are ${x.values.eyeShape} and ${x.values.eyeColor}`)),
+));
+results.push(check("no placeholder is left unresolved in a finished prompt", anatomyPrompts.every(({ p }) => !/[{}]/.test(p))));
+const fixedLines = [
+  "Vertical 2:3 frame, chest-up, eye-level camera, face fills most of the image.",
+  "heavily blurred",
+  "Shot on an 85mm lens at f/1.8, sharp focus on the eyes, strong separation between subject and background.",
+  "Visible skin pores, individual hair strands, natural catchlights in the eyes.",
+];
+results.push(check(
+  "the fixed photographic instructions are in every prompt, including those with no details",
+  anatomyPrompts.some(({ s: x }) => x.details.length === 0) &&
+    anatomyPrompts.every(({ p }) => fixedLines.every((line) => p.includes(line))),
+));
+const negative = readFileSync("negative.txt", "utf8").trim();
+const negativeItems = negative.split(",").map((x) => x.trim());
+results.push(check("the negative list no longer excludes blur on its own", !negativeItems.includes("blur")));
+results.push(check(
+  "the negative list excludes motion blur and an out-of-focus subject",
+  ["motion blur", "out-of-focus face", "missed focus", "soft-focus subject"].every((x) => negativeItems.includes(x)),
+));
+results.push(check("the positive template still asks for a blurred background", /Setting is \{background\}, heavily blurred/.test(template)));
+results.push(check(
+  "composePrompt joins the lead-in, the filled template and the negative list",
+  composePrompt(template, negative, 5, "a", true) ===
+    `Generate an image. ${buildPrompt(template, 5, "a").trim()}\n\nAvoid: ${negative}.` &&
+    composePrompt(template, negative, 5, "a") === `Generate an image. ${buildPrompt(template, 5, "a").trim()}`,
+));
+const mixed = detailSamples.filter((d) => d.ethnicities.length === 2);
+results.push(check(
+  "about a quarter of portraits mix two ethnicities",
+  mixed.length / detailSamples.length > MIX_RATE - 0.05 && mixed.length / detailSamples.length < MIX_RATE + 0.05,
+));
+results.push(check(
+  "a mix names two different ethnicities from the pool, and a single one is a plain pool entry",
+  detailSamples.every((d) =>
+    d.ethnicities.length >= 1 && d.ethnicities.length <= 2 &&
+    d.ethnicities.every((e) => pools.ethnicity.includes(e)) &&
+    new Set(d.ethnicities).size === d.ethnicities.length &&
+    d.values.ethnicity === d.ethnicities.join(" and ")),
+));
+results.push(check(
+  "both orders of a mix occur",
+  mixed.some((d) => pools.ethnicity.indexOf(d.ethnicities[0]) < pools.ethnicity.indexOf(d.ethnicities[1])) &&
+    mixed.some((d) => pools.ethnicity.indexOf(d.ethnicities[0]) > pools.ethnicity.indexOf(d.ethnicities[1])),
+));
+results.push(check(
+  "a mix reads naturally in the finished prompt",
+  detailSamples.slice(0, 300).every((d, i) => buildPrompt(template, i + 1, "d").includes(`of ${d.values.ethnicity} background`)),
+));
+const versionTag = promptFiles().version;
+results.push(check("the template version was bumped past portrait-v3", /^portrait-v(\d+)$/.test(versionTag) && Number(versionTag.slice(10)) >= 4));
 
 // The module's interface, on real files in a throwaway folder. Only the fixture
 // setup below writes to disk; every assertion asks the module.
