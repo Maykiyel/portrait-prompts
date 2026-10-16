@@ -12,3 +12,5 @@ yarn.lock
 .DS_Store
 Thumbs.db
 *.log
+# Scratch captured while researching a vendor's API. Never part of the repo.
+.tmp-research/
