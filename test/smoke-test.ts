@@ -233,53 +233,245 @@ results.push(check(
 ));
 // A reader running against a folder that is being written to must never be told
 // the folder has no state. Two readers, in their own processes and each holding
-// its own open module, loop for three seconds while this process hands out Seeds.
-// They ask the module for the status, so a torn counter shows up as a missing or
-// unusable next Seed rather than as Seed 1.
+// its own open module, read in a loop while this process hands out Seeds. They
+// ask the module for the status, so what they were told is what is under test,
+// not what is on disk.
+//
+// Three questions per read, counted apart, because they are three different
+// failures and the report used to collapse them into one number:
+//
+//   noNext     the read came back without a usable next Seed.
+//   problem    the read came back saying the folder has a problem, and the reader
+//              records the code and the message, so a red line can say which one
+//              it was told rather than only that it was told something. A read
+//              with a problem is also a read with no next Seed — the module
+//              reports one without the other — so this count is never the one
+//              that decides; it is what says why.
+//   backwards  the read came back with a next Seed below one this reader had
+//              already seen. This is the third question because it is the one a
+//              count of broken reads cannot see: a counter that has reset is a
+//              perfectly good integer. Seed 1 would have passed the old check
+//              silently, which is the shape of the bug the atomic write exists to
+//              prevent (docs/adr/0001), and a guard that cannot see it is not the
+//              guard this block was written to be.
+//
+// Whether a torn counter is real on this platform was measured rather than
+// assumed, since that is the half of this that matters. About 200k reads across
+// some 200 reader processes have never come back partial, and a direct
+// experiment — 90k reads against four thousand replace-renames — found no failed
+// read, no partial content and no counter that went backwards. What Windows does
+// refuse, 94 times in 100 here, is the *writer's* rename while a reader holds the
+// file open, which is what the retry loop in core/output-folder.ts is for; the
+// same denial never reached a reader's open in any of that. So the rename is the
+// atomicity the module relies on, and the one broken read this block ever
+// reported could not be reproduced: the branches above are here so that if it
+// ever happens again, the line says which one it was.
+//
+// The three are asked together and reported as two checks, because there are two
+// claims here and they fail for unrelated reasons. The first is what a reader is
+// never shown. The second is that the race happened at all: a reader that never
+// watched the counter move has not tested anything, and that is a different
+// failure from a torn read.
 const writerDir = "out-smoke6";
 rmSync(writerDir, { recursive: true, force: true });
 const writer = openOutputFolder(writerDir, "");
 writer.claimSeeds(1); // the counter now exists for the readers to race against
+// The two bars a reader reads under, handed in rather than written into the
+// reader below so the numbers this block reasons about are spelled once and the
+// reader cannot drift from them.
+//
+// The read floor is not a pass condition — nothing here turns red because a
+// reader did too few — it is how a slow machine is given the exposure a fast one
+// gets instead of failing for its speed. It used to be exactly that: a bar of a
+// hundred reads in the same condition as the broken count, which is the half of
+// the old red line that had nothing to do with atomicity. A status call walks the
+// folder, so how many a reader manages in three seconds is a fact about the
+// machine; how many it is entitled to is a fact about the counter.
+const READ_FOR_MS = 3000;
+const READS_FLOOR = 100;
+// And a backstop, for a reader that has stopped answering altogether: without one
+// the loop below would rewrite the counter for as long as it waited for a process
+// that is never coming back. The readers closing is what normally ends it.
+const GIVE_UP_AFTER_MS = 30000;
+// One reader, reporting on itself. It says `ready` on the line before it starts
+// reading, so this process knows it is in the race rather than guessing; the
+// counts are its own tally of what the module told it, and the two Seed numbers
+// are what let it say afterwards that the counter moved under it.
 const READER = `const { pathToFileURL } = require("node:url");
  void (async () => {
    const { openOutputFolder } = await import(pathToFileURL(process.argv[1]).href);
    const folder = openOutputFolder(process.argv[2], "");
-   let reads = 0, broken = 0;
-   const until = Date.now() + 3000;
-   while (Date.now() < until) {
-     reads++;
+   const report = { reads: 0, noNext: 0, problem: 0, backwards: 0, first: null, last: null, told: [] };
+   const until = Date.now() + Number(process.argv[3]);
+   const floor = Number(process.argv[4]);
+   const giveUpAt = Date.now() + Number(process.argv[5]);
+   process.stdout.write("ready\\n");
+   // Both bars have to be met, not either: the window, and enough reads to have
+   // seen something. A reader on a slow machine reads on past its window rather
+   // than stopping short and being failed for it, which is the whole difference
+   // from the read count this replaces.
+   while ((Date.now() < until || report.reads < floor) && Date.now() < giveUpAt) {
+     report.reads++;
      const s = folder.status();
-     if (!Number.isInteger(s.next) || (s.next ?? 0) < 1 || s.problem) broken++;
+     const usable = Number.isInteger(s.next) && (s.next ?? 0) >= 1;
+     if (!usable) report.noNext++;
+     if (s.problem) {
+       report.problem++;
+       const said = String(s.problemCode) + ": " + s.problem;
+       if (report.told.length < 3 && !report.told.includes(said)) report.told.push(said);
+     }
+     if (usable) {
+       if (report.last === null) report.first = s.next;
+       else if (s.next < report.last) report.backwards++;
+       report.last = s.next;
+     }
    }
-   process.stdout.write(JSON.stringify({ reads, broken }));
+   process.stdout.write(JSON.stringify(report) + "\\n");
  })();`;
-const readers = [0, 1].map(() =>
-  execFile(process.execPath, ["--import", "tsx", "-e", READER, join(repoRoot, "core/output-folder.ts"), writerDir], {
-    cwd: repoRoot,
-  }),
-);
-const reports = Promise.all(
-  readers.map(
-    (r) =>
-      new Promise<{ reads: number; broken: number }>((resolve) => {
-        let text = "";
-        r.stdout?.on("data", (c: Buffer) => (text += c.toString()));
-        r.on("close", () => resolve(JSON.parse(text)));
-      }),
-  ),
-);
-const writingUntil = Date.now() + 2800;
-while (Date.now() < writingUntil) writer.issueSeeds(1);
-const torn = await reports;
-if (!torn.every((r) => r.reads > 100 && r.broken === 0))
-  console.log(`      readers reported ${JSON.stringify(torn)}`);
-// The bar is a hundred real reads per reader, not a thousand: a status call walks
-// the folder, so it is far slower than reading one file, and the point is that
-// every one of those reads agreed the folder had a usable next Seed.
+/** What a reader prints: its own tally of what the module told it. */
+type ReaderTally = {
+  reads: number;
+  noNext: number;
+  problem: number;
+  backwards: number;
+  first: number | null;
+  last: number | null;
+  told: string[];
+};
+/** That tally, plus the three facts only the reader's own process knows. */
+type ReaderReport = ReaderTally & { name: string; exited: number | null; stderr: string };
+/** One reader: when it is in the race, and what it has to say afterwards. */
+const racingReader = (name: string, dir: string): { ready: Promise<void>; report: Promise<ReaderReport> } => {
+  let startReading = () => {};
+  const ready = new Promise<void>((resolve) => { startReading = resolve; });
+  const report = new Promise<ReaderReport>((resolve) => {
+    const reader = execFile(process.execPath, [
+      "--import", "tsx", "-e", READER, join(repoRoot, "core/output-folder.ts"), dir,
+      String(READ_FOR_MS), String(READS_FLOOR), String(GIVE_UP_AFTER_MS),
+    ], { cwd: repoRoot });
+    let text = "", stderrText = "", inRace = false;
+    reader.stdout?.on("data", (c: Buffer) => {
+      text += c.toString();
+      if (!inRace && /^ready$/m.test(text)) { inRace = true; startReading(); }
+    });
+    reader.stderr?.on("data", (c: Buffer) => (stderrText += c.toString()));
+    reader.on("close", (code) => {
+      // A reader that never said it was ready is one that died on the way in, so
+      // it stops waiting for a race it is not in. And a reader that printed no
+      // tally has not reported a clean run: it has reported nothing, which is a
+      // fact about the reader rather than about the counter. Both are carried as
+      // a report, so they land on a check that says so, rather than throwing out
+      // of this file with nothing left to read.
+      //
+      // The zeroed tally is spelled out rather than shared with the reader above,
+      // which is the same shape of value written twice: it is a literal in another
+      // process's source, and two processes cannot share one declaration.
+      const saidNothing: ReaderTally = { reads: 0, noNext: 0, problem: 0, backwards: 0, first: null, last: null, told: [] };
+      let tally: ReaderTally | undefined;
+      try {
+        tally = JSON.parse(text.trim().split("\n").pop() ?? "") as ReaderTally;
+      } catch {
+        tally = undefined;
+      }
+      // The name, the exit status and the stderr are added here rather than asked
+      // for: they are facts about the reader's process, which is the only thing
+      // here that knows them.
+      startReading();
+      resolve({ name, ...(tally ?? saidNothing), exited: code, stderr: stderrText });
+    });
+  });
+  return { ready, report };
+};
+// Both readers are asked at once, because the point is that they are racing this
+// process and not each other: started one after the other, the second would be
+// racing the first and the whole block would be measuring nothing.
+const readers = [racingReader("reader 1", writerDir), racingReader("reader 2", writerDir)];
+const closed = Promise.all(readers.map((r) => r.report));
+// The writing opens when the first reader is in and closes when the last one is
+// out, so that every read either reader makes is inside it. Waiting for both
+// before the first write is what this used to do, and it is wrong in a way only a
+// slow boot shows: each reader's window starts when *it* is ready, so a reader
+// that boots late leaves the early one finishing its whole window against a
+// counter this process has not touched yet. Before that it was a fixed 2800ms
+// from the spawn, which is worse — under load both readers could boot after the
+// writer had finished, and the block reported a race that never happened as a red
+// line about the counter.
+await Promise.race(readers.map((r) => r.ready));
+// What the counter read before this process started rewriting it, and what it
+// reads after. Both are asked of the module, like everything else here.
+const beforeTheRace = writer.status().next;
+let finished = 0;
+void closed.then(() => { finished = readers.length; });
+// One turn of the event loop, which is what lets the readers' exit events in: the
+// loop below is synchronous work, and nothing else runs while it is going.
+const eventLoopTurn = () => new Promise((resolve) => setImmediate(resolve));
+const stopWritingAt = Date.now() + GIVE_UP_AFTER_MS;
+while (finished < readers.length && Date.now() < stopWritingAt) {
+  writer.issueSeeds(1);
+  await eventLoopTurn();
+}
+const afterTheRace = writer.status().next;
+const torn = await closed;
+/** Whether a Seed counter was watched to rise: the one shape both halves ask. */
+const rose = (before: number | null, after: number | null) =>
+  before !== null && after !== null && after > before;
+/** One reader, as a line someone can act on: every count, and what it was told. */
+const describeReader = (r: ReaderReport) =>
+  `${r.name}: reads=${r.reads} noNext=${r.noNext} problem=${r.problem} backwards=${r.backwards} ` +
+  `next=${r.first}..${r.last}` +
+  (r.told.length ? ` told ${r.told.join(" / ")}` : "") +
+  (r.exited ? ` exited=${r.exited}${r.stderr ? ` ${r.stderr.trim().split("\n")[0]}` : ""}` : "");
+
+const wholeCounter = torn.every((r) => r.noNext === 0 && r.problem === 0 && r.backwards === 0);
+if (!wholeCounter) torn.forEach((r) => console.log(`      ${describeReader(r)}`));
 results.push(check(
-  "a reader racing the writer never sees a partial counter",
-  torn.every((r) => r.reads > 100 && r.broken === 0),
+  "a reader racing the writer never sees a partial counter or one that has gone backwards",
+  wholeCounter,
 ));
+
+// The check above only says something if the counter really was moving under the
+// readers, so that is asked separately, and by fact rather than by count: every
+// reader has to have watched it move, and this process has to have moved it.
+// Watching the counter move is what a real race implies on its own, and it holds
+// however slow the machine is, so a reader that never watched one is reported
+// here and not above — a different failure from a torn read, and one this block
+// cannot make happen by asking for more of it.
+const moved = rose(beforeTheRace, afterTheRace);
+const watched = (r: ReaderReport) => r.exited === 0 && rose(r.first, r.last);
+const raced = moved && torn.every(watched);
+if (!raced) {
+  if (!moved) console.log(`      this process moved the counter from ${beforeTheRace} to ${afterTheRace}`);
+  torn.filter((r) => !watched(r)).forEach((r) => console.log(`      ${describeReader(r)}`));
+}
+results.push(check("both readers raced a counter that was really moving", raced));
+
+// And the third question, proved rather than argued. The claim above is that a
+// counter which has reset cannot pass for Seed 1, and a reader that has never
+// seen one go backwards cannot say whether it would catch one — so this is a
+// second and much shorter race, in a folder of its own, where the fixture resets
+// the counter on purpose. It is the shape of the bug the atomic write exists to
+// prevent, planted so that the counting is known to work, and it is the only
+// place in the suite that writes a counter by hand.
+const probeDir = "out-smoke7";
+rmSync(probeDir, { recursive: true, force: true });
+const probeWriter = openOutputFolder(probeDir, "");
+probeWriter.claimSeeds(1);
+const probe = racingReader("probe reader", probeDir);
+await probe.ready;
+const climbingUntil = Date.now() + READ_FOR_MS / 2;
+while (Date.now() < climbingUntil) probeWriter.issueSeeds(1);
+writeFileSync(join(probeDir, "cursor.json"), JSON.stringify({ next: 1, salt: "" }));
+const probed = await probe.report;
+// One backwards read is the whole claim, and it cannot be vacuous: the reader
+// counts one only against a higher Seed it had already been given, so a zero here
+// means it never watched the counter rise before the reset rather than that the
+// counting is broken.
+if (probed.backwards === 0) console.log(`      ${describeReader(probed)}`);
+results.push(check(
+  "a reader counts a Seed counter that has gone backwards, so a reset one cannot pass for Seed 1",
+  probed.backwards > 0,
+));
+rmSync(probeDir, { recursive: true, force: true });
 rmSync(writerDir, { recursive: true, force: true });
 rmSync(counterDir, { recursive: true, force: true });
 
