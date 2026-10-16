@@ -21,6 +21,8 @@ export type FrameRecord = {
   seed: number;
   version: string;
   source: "api" | "manual" | "unknown";
+  /** Which Provider made this. Rows written before Providers existed name the only one that did. */
+  provider?: string;
   model?: string;
   prompt: string;
   updatedAt: string;
@@ -31,6 +33,7 @@ export type PromptItem = { seed: number; prompt: string };
 export type Attempt = {
   seed: number;
   status: "ok" | "failed" | "rejected";
+  provider?: string;
   model?: string;
   source?: "manual" | "api";
   file?: string;
@@ -42,6 +45,7 @@ export type Attempt = {
 export type FrameWrite = {
   seed: number;
   buffer: Buffer;
+  provider?: string;
   model?: string;
   source?: "manual" | "api";
   file?: string;
@@ -74,6 +78,7 @@ type ManifestRow = {
   seed: number;
   status: string;
   version?: string;
+  provider?: string;
   model?: string;
   source?: string;
   prompt?: string;
@@ -262,6 +267,11 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
         seed,
         version: row?.version ?? "unknown",
         source: row?.source === "manual" ? "manual" : row ? "api" : "unknown",
+        // Rows written before a Manifest carried a provider name one that was
+        // available at the time, so this reads a fact about the row rather than
+        // guessing at it. The default is stated here and nowhere else, because
+        // this is the only module that reads the Manifest.
+        provider: row ? (row.provider ?? "gemini") : undefined,
         model: row?.model,
         prompt: row?.prompt ?? "",
         updatedAt: statSync(frameFile(seed)).mtime.toISOString(),
@@ -297,8 +307,9 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
       appendFileSync(manifestFile, JSON.stringify({ seed: attempt.seed, status: "rejected", ts: attempt.ts ?? new Date().toISOString() }) + "\n");
       return;
     }
-    const { seed, model, source, file, prompt, status: result, error, ts } = attempt;
+    const { seed, provider, model, source, file, prompt, status: result, error, ts } = attempt;
     const row: Record<string, unknown> = { seed, version, salt };
+    if (provider !== undefined) row.provider = provider;
     if (model !== undefined) row.model = model;
     if (source !== undefined) row.source = source;
     if (file !== undefined) row.file = file;
