@@ -1,5 +1,5 @@
-# Lint, type check, build and the offline smoke test on both supported Node
-# majors. The smoke test uses fake image generators, so this needs no API key
+# Lint, type check, build and the offline smoke test on the supported Node
+# version. The smoke test uses fake image generators, so this needs no API key
 # and no network beyond the install.
 name: CI
 
@@ -12,10 +12,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     strategy:
-      # Report both Node majors rather than stopping at the first failure.
-      fail-fast: false
       matrix:
-        node: [20, 22]
+        node: [22]
     steps:
       - uses: actions/checkout@v7
 

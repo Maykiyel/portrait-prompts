@@ -8,7 +8,7 @@ Each portrait is a fictional adult with randomized age, background, face, hair, 
 
 ## Requirements
 
-- Node 20.19 or newer, or Node 22.12 or newer.
+- Node 22.12 or newer.
 - npm, pnpm or yarn. Any of them works, and nothing in the repo depends on one. See [Package managers](#package-managers).
 - An API key for at least one provider, only for the paid API route. Gemini's image models have no free tier. OpenAI's need a card with at least $5 on it, and may ask you to verify your organisation first.
 
