@@ -734,9 +734,9 @@ try {
   results.push(check("Frame records are newest-first with Attempt provenance",
     folder.listFrames().map((frame) => frame.seed).join() === "5,2" &&
     folder.listFrames()[0].model === "fixture-model" && folder.listFrames()[0].prompt === folder.promptFor(5, true)));
-  folder.rejectFrame(2);
+  folder.rejectFrame(2, "other");
   results.push(check("Rejection returns a Seed to waiting", !folder.hasFrame(2) && folder.waitingSeeds().includes(2) && folder.listFrames().map((frame) => frame.seed).join() === "5"));
-  results.push(check("a second Rejection raises the missing-Frame code", errorCode(() => folder.rejectFrame(2)) === "missing-frame"));
+  results.push(check("a second Rejection raises the missing-Frame code", errorCode(() => folder.rejectFrame(2, "other")) === "missing-frame"));
   // Which download lands on which Seed is the adapter's decision, so the module
   // has no download time to match on. These two lines are a compile-time check:
   // drop the error on the second and typecheck fails.
@@ -817,7 +817,7 @@ try {
   const request: import("../shared/api-types").GenerateRequest = { count: 1, provider: "gemini", model: "flash", size: "1K", concurrency: 1, useNegative: false };
 
   results.push(check("one table maps every ArchiveErrorCode to a status, and nothing keys on text",
-    codes.length === 6 && codes.every((code) => typeof STATUS_BY_CODE[code] === "number")));
+    codes.length === 7 && codes.every((code) => typeof STATUS_BY_CODE[code] === "number")));
   for (const code of codes) {
     const reworded = await api.request(`/reworded/${code}`);
     const body = (await reworded.json()) as { error?: string };
@@ -891,11 +891,11 @@ try {
     (await notAnArray("5")) === 400));
 
   results.push(check("a Rejection through the route returns the Seed to waiting",
-    (await api.request("/api/images/3/reject", { method: "POST" })).status === 200 &&
+    (await api.request("/api/images/3/reject", { method: "POST", body: JSON.stringify({ reason: "other" }), headers: { "Content-Type": "application/json" } })).status === 200 &&
     !seeded.hasFrame(3) && seeded.waitingSeeds().join() === "2,3" &&
     (await api.request("/api/images/3/file")).status === STATUS_BY_CODE["missing-frame"]));
   results.push(check("a second Rejection is refused with the missing-Frame status",
-    (await api.request("/api/images/3/reject", { method: "POST" })).status === STATUS_BY_CODE["missing-frame"]));
+    (await api.request("/api/images/3/reject", { method: "POST", body: JSON.stringify({ reason: "other" }), headers: { "Content-Type": "application/json" } })).status === STATUS_BY_CODE["missing-frame"]));
 
   const noKey = await api.request("/api/generate", { method: "POST", body: JSON.stringify(request) });
   results.push(check("the Job refuses to start without an API key",

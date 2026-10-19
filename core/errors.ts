@@ -8,7 +8,8 @@ export type ArchiveErrorCode =
   | "missing-frame"
   | "seed-not-waiting"
   | "invalid-count"
-  | "invalid-seed";
+  | "invalid-seed"
+  | "quality-failed";
 
 export class ArchiveError extends Error {
   constructor(

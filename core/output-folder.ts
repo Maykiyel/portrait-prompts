@@ -9,7 +9,7 @@ import { qc, type QCResult, type QcFlag, type QcStatus } from "./qc";
 import { readRow, sampledPortrait } from "./manifest-reader";
 import type {
   AttributesSource, DuplicateRecord, FrameSource, GenerationParams, GenerationStatus,
-  ImageDigest, IngestQuarantine, ManifestRow, NormalizedDigest, ReviewState, SampledPortrait,
+  ImageDigest, IngestQuarantine, ManifestRow, NormalizedDigest, ReviewReason, ReviewState, SampledPortrait,
   SchemaVersion, SeedState,
 } from "./manifest-types";
 
@@ -167,10 +167,12 @@ export type OutputFolder = Readonly<{
   manifestRows(): ManifestRow[];
   hasFrame(seed: number): boolean;
   readFrame(seed: number, raw?: boolean): ReadStream;
+  readQuarantinedFrame(seed: number): ReadStream;
   readThumbnail(seed: number, width: number): Promise<ReadStream>;
   writeFrame(frame: FrameWrite): Promise<void>;
   importFrames(files: FileForImport[], seeds: number[]): Promise<ImportedFrame[]>;
-  rejectFrame(seed: number): void;
+  acceptFrame(seed: number, note?: string): void;
+  rejectFrame(seed: number, reason: ReviewReason, note?: string): void;
   recordAttempt(attempt: GenerationRecord): void;
   /** The Prompt and the attributes that built it, from a single sampling. */
   sampleFor(seed: number, useNegative?: boolean): SampledPortrait;
@@ -179,6 +181,7 @@ export type OutputFolder = Readonly<{
   quarantineDir(): string;
   quarantinedFiles(): string[];
   quarantinedSeeds(): number[];
+  quarantinedFrames(): { seed: number; reason: string; kind: "ingestion" | "review"; frame?: string; raw?: string }[];
   quarantineFrame(seed: number, buffer: Buffer, result?: QCResult): Promise<void>;
   qcFrame(seed: number): Promise<QCResult | undefined>;
 }>;
@@ -535,6 +538,15 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     return createReadStream(file);
   };
 
+  const readQuarantinedFrame = (seed: number): ReadStream => {
+    validateSeed(seed);
+    const entry = quarantinedFrames().find((q) => q.seed === seed);
+    if (!entry?.frame || !existsSync(entry.frame)) throw new ArchiveError("missing-frame", `No quarantined Frame for Seed ${seed}`);
+    // The path came from manifest data, not from the client. Keep it that way.
+    if (!entry.frame.startsWith(quarantineDirPath)) throw new ArchiveError("missing-frame", `No quarantined Frame for Seed ${seed}`);
+    return createReadStream(entry.frame);
+  };
+
   const readThumbnail = async (seed: number, width: number): Promise<ReadStream> => {
     validateSeed(seed);
     if (!Number.isInteger(width) || width < 1) throw new ArchiveError("invalid-count", "Thumbnail width must be a positive whole number");
@@ -688,7 +700,7 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     // `fail`, so the status is what decides.
     if (quality.status === "fail") {
       mkdirSync(quarantineDirPath, { recursive: true });
-      const destination = join(quarantineDirPath, `${pad(frame.seed)}.png`);
+      const destination = join(quarantineDirPath, `${pad(frame.seed)}-${raw.sha256.slice(0, 8)}.png`);
       writeFileSync(destination, rawBytes);
       const reason = quality.flags.join(", ") || "failed the quality record";
       // Exactly one row for this attempt, and it carries the raw hash of the
@@ -764,16 +776,54 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
    * attempt: nothing was generated, so there is no outcome to record. The
    * archive is append-only, so this is the only way to say it.
    */
-  const rejectFrame = (seed: number): void => {
+  const acceptFrame = (seed: number, note?: string): void => {
+    validateSeed(seed);
+    const counter = readCounter();
+    assertSalt(counter);
+    const state = latestBySeed().get(seed);
+    if (!state?.generation) throw new ArchiveError("missing-frame", `No Frame for Seed ${seed}`);
+    if (state.generation.qc?.status === "fail")
+      throw new ArchiveError("quality-failed", `Seed ${seed} failed its quality checks and cannot be accepted`);
+    if (state.review?.review === "rejected")
+      throw new ArchiveError("seed-not-waiting", `Accepting a rejected Frame is not supported in this phase (Seed ${seed})`);
+    // A repeated accept with the same decision appends nothing.
+    if (state.review?.review === "accepted") return;
+    appendRow({ schema: SCHEMA, seed, kind: "review", review: "accepted", note, ts: new Date().toISOString() });
+  };
+
+  const rejectFrame = (seed: number, reason: ReviewReason, note?: string): void => {
     validateSeed(seed);
     const counter = readCounter();
     assertSalt(counter);
     if (!hasFrame(seed)) throw new ArchiveError("missing-frame", `No Frame for Seed ${seed}`);
-    rmSync(frameFile(seed), { force: true });
-    rmSync(rawFile(seed), { force: true });
+    const state = latestBySeed().get(seed);
+    // A repeated rejection with the same reason appends nothing and moves nothing.
+    if (state?.review?.review === "rejected" && state.review.reason === reason) return;
+    const rawHash = state?.generation?.raw?.sha256 ?? "";
+    const hash8 = rawHash.slice(0, 8) || "00000000";
+    mkdirSync(quarantineDirPath, { recursive: true });
+    mkdirSync(join(quarantineDirPath, "raw"), { recursive: true });
+    const frameDest = join(quarantineDirPath, `${pad(seed)}-${hash8}.png`);
+    const rawDest = join(quarantineDirPath, "raw", `${pad(seed)}-${hash8}.png`);
+    // Move, do not delete: the bytes stay byte-identical and the stored hashes stay valid.
+    if (existsSync(frameDest)) rmSync(frameDest, { force: true });
+    renameSync(frameFile(seed), frameDest);
+    if (existsSync(rawFile(seed))) {
+      if (existsSync(rawDest)) rmSync(rawDest, { force: true });
+      renameSync(rawFile(seed), rawDest);
+    }
     for (const file of existsSync(thumbDir) ? readdirSync(thumbDir) : [])
       if (file.startsWith(`${pad(seed)}-`)) rmSync(join(thumbDir, file), { force: true });
-    appendRow({ schema: SCHEMA, seed, kind: "review", review: "rejected", ts: new Date().toISOString() });
+    appendRow({
+      schema: SCHEMA,
+      seed,
+      kind: "review",
+      review: "rejected",
+      reason,
+      note,
+      ts: new Date().toISOString(),
+      quarantine: { frame: frameDest, raw: rawDest },
+    });
   };
 
   const promptFor = (seed: number, useNegative = false): string => sampleFor(seed, useNegative).prompt;
@@ -788,6 +838,22 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
       .map((name) => name.match(/^(\d{5})/)?.[1])
       .filter((match): match is string => !!match)
       .map(Number);
+
+  const quarantinedFrames = (): { seed: number; reason: string; kind: "ingestion" | "review"; frame?: string; raw?: string }[] => {
+    const out: { seed: number; reason: string; kind: "ingestion" | "review"; frame?: string; raw?: string }[] = [];
+    for (const [seed, state] of latestBySeed()) {
+      const gq = state.generation?.quarantine;
+      if (gq && "path" in gq && "reason" in gq) {
+        out.push({ seed, reason: (gq as IngestQuarantine).reason, kind: "ingestion", frame: (gq as IngestQuarantine).path });
+      }
+      const rq = state.review?.quarantine;
+      if (rq && typeof rq === "object" && "frame" in rq && "raw" in rq) {
+        const q = rq as { frame: string; raw: string };
+        out.push({ seed, reason: state.review?.reason ?? "rejected", kind: "review", frame: q.frame, raw: q.raw });
+      }
+    }
+    return out.sort((a, b) => a.seed - b.seed);
+  };
 
   /**
    * Puts bytes aside as a quarantine, for a Frame that was kept out of the
@@ -824,9 +890,9 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
 
   return Object.freeze({
     status, waitingSeeds, issueSeeds, claimSeeds, listFrames, frameRecord, hasFrame, readFrame,
-    readThumbnail, writeFrame, importFrames, rejectFrame, recordAttempt,
+    readThumbnail, writeFrame, importFrames, acceptFrame, rejectFrame, recordAttempt, readQuarantinedFrame,
     sampleFor, promptFor, promptsFor,
-    quarantineDir, quarantinedFiles, quarantinedSeeds, quarantineFrame, qcFrame,
+    quarantineDir, quarantinedFiles, quarantinedSeeds, quarantinedFrames, quarantineFrame, qcFrame,
     manifestRows: readManifest,
   });
 }

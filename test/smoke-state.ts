@@ -107,8 +107,8 @@ export async function runStateChecks(): Promise<void> {
     }
     // A person turns Seed 2 down and Seed 4 down. Both lose their Frame, both
     // go back to waiting, and both leave a review row behind.
-    folder.rejectFrame(2);
-    folder.rejectFrame(4);
+    folder.rejectFrame(2, "other");
+    folder.rejectFrame(4, "other");
     // Seed 4 is then regenerated, because a rejected Seed waits. The bytes that
     // come back are refused again, which is the only way a Seed can end up with
     // a rejected review row and a failed generation row at the same time.

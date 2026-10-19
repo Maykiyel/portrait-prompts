@@ -20,6 +20,7 @@ export const STATUS_BY_CODE: Record<ArchiveErrorCode, 400 | 404 | 409 | 500> = {
   "missing-frame": 404,
   "seed-not-waiting": 409,
   "salt-mismatch": 409,
+  "quality-failed": 409,
   "unreadable-counter": 500,
 };
 
@@ -73,9 +74,29 @@ export function createApp(dataset: Dataset, registry: ProviderRegistry): Hono {
     if (c.req.query("download") === "1") c.header("Content-Disposition", `attachment; filename="${seedLabel(seed)}.png"`);
     return send(c, store.readFrame(seed, c.req.query("raw") === "1"));
   });
-  api.post("/images/:seed/reject", (c) => {
-    store.rejectFrame(Number(c.req.param("seed")));
+  api.post("/images/:seed/accept", async (c) => {
+    let body: { reason?: unknown; note?: unknown } = {};
+    try { body = await c.req.json(); } catch { body = {}; }
+    const note = typeof body.note === "string" ? body.note : undefined;
+    store.acceptFrame(Number(c.req.param("seed")), note);
     return c.json({ ok: true });
+  });
+  api.post("/images/:seed/reject", async (c) => {
+    let body: { reason?: unknown; note?: unknown } = {};
+    try { body = await c.req.json(); } catch { body = {}; }
+    const reason = typeof body.reason === "string" ? body.reason : "";
+    const note = typeof body.note === "string" ? body.note : undefined;
+    const REVIEW_REASONS = ["attribute_mismatch", "visible_artifacts", "not_a_portrait", "duplicate", "image_quality", "policy", "other"];
+    if (!REVIEW_REASONS.includes(reason)) return c.json({ error: "reason is required" }, 400);
+    store.rejectFrame(Number(c.req.param("seed")), reason, note);
+    return c.json({ ok: true });
+  });
+  api.get("/quarantine", (c) => c.json(store.quarantinedFrames()));
+  api.get("/quarantine/:seed/file", (c) => {
+    const seed = Number(c.req.param("seed"));
+    c.header("Content-Type", "image/png");
+    c.header("Cache-Control", "no-cache");
+    return send(c, store.readQuarantinedFrame(seed));
   });
 
   api.post("/import", async (c) => {

@@ -244,7 +244,7 @@ export async function runManifestChecks(): Promise<void> {
     });
     const refusedRows = storedRows(refusedDir);
     const refusedRow = refusedRows[0];
-    const keptAt = join(refusedDir, "quarantine", `${seedLabel(1)}.png`);
+    const keptAt = join(refusedDir, "quarantine", `${seedLabel(1)}-${sha256Of(unreadable).slice(0, 8)}.png`);
     results.push(check(
       "a Frame refused as it arrived leaves exactly one row, with its raw hash and no normalized one",
       refusedRun.failed === 1 && refusedRun.done === 0 &&

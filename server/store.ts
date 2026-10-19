@@ -1,4 +1,5 @@
 import { openOutputFolder, type OutputFolder } from "../core/output-folder";
+import type { ReviewReason } from "../core/output-folder";
 import { ArchiveError } from "../core/errors";
 import { hasKey, maxConcurrencyFor, type ProviderRegistry } from "../core/providers";
 import type {
@@ -25,8 +26,11 @@ export type Store = {
   /** One Seed's full record. Raises `missing-frame` when no row describes that Seed. */
   frameRecord(seed: number): SeedRecordItem;
   readFrame(seed: number, raw?: boolean): FrameStream;
+  readQuarantinedFrame(seed: number): FrameStream;
   readThumbnail(seed: number, width: number): Promise<FrameStream>;
-  rejectFrame(seed: number): void;
+  acceptFrame(seed: number, note?: string): void;
+  rejectFrame(seed: number, reason: string, note?: string): void;
+  quarantinedFrames(): ReturnType<OutputFolder["quarantinedFrames"]>;
   importFiles(files: File[], seeds: number[]): Promise<ImportResult[]>;
 };
 
@@ -91,11 +95,18 @@ export function createStore({ outDir, salt }: Dataset, registry: ProviderRegistr
   };
 
   const readFrame = (seed: number, raw = false): FrameStream => archive().readFrame(seed, raw);
+  const readQuarantinedFrame = (seed: number): FrameStream => archive().readQuarantinedFrame(seed);
 
   const readThumbnail = (seed: number, width: number): Promise<FrameStream> => archive().readThumbnail(seed, width);
 
+  /** Accepts a Frame, unless its QC status is fail. */
+  const acceptFrame = (seed: number, note?: string): void => archive().acceptFrame(seed, note);
+
   /** Removes the Frame so its Seed goes back to waiting. The Manifest keeps a record. */
-  const rejectFrame = (seed: number): void => archive().rejectFrame(seed);
+  const rejectFrame = (seed: number, reason: string, note?: string): void =>
+    archive().rejectFrame(seed, reason as ReviewReason, note);
+
+  const quarantinedFrames = () => archive().quarantinedFrames();
 
   /**
    * A batch that breaks an invariant is refused whole; a file that cannot be
@@ -107,7 +118,7 @@ export function createStore({ outDir, salt }: Dataset, registry: ProviderRegistr
       seeds,
     );
 
-  return { getStatus, getPending, addPrompts, listImages, frameRecord, readFrame, readThumbnail, rejectFrame, importFiles };
+  return { getStatus, getPending, addPrompts, listImages, frameRecord, readFrame, readQuarantinedFrame, readThumbnail, acceptFrame, rejectFrame, quarantinedFrames, importFiles };
 }
 
 /** Why an import is refused before it reaches the module. The route turns this into a response, so no refusal here carries a status from the module. */
