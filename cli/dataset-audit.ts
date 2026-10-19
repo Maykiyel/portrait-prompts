@@ -5,7 +5,7 @@ import { join } from "node:path";
 import sharp from "sharp";
 import { readArchive, seedLabel } from "../core/output-folder";
 import type { ManifestRow } from "../core/output-folder";
-import { distanceBits, PHASH_ALGO, PHASH_THRESHOLD } from "../core/duplicates";
+import { distanceBits, perceptualHash, PHASH_ALGO, PHASH_THRESHOLD } from "../core/duplicates";
 
 function arg(name: string, fallback?: string): string | undefined {
   const i = process.argv.indexOf(name);
@@ -16,6 +16,17 @@ function countOf(values: string[]): Record<string, number> {
   const out: Record<string, number> = {};
   for (const value of values) out[value] = (out[value] ?? 0) + 1;
   return out;
+}
+
+function sortObjectKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortObjectKeys);
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(obj).sort()) sorted[key] = sortObjectKeys(obj[key]);
+    return sorted;
+  }
+  return value;
 }
 
 function sha256File(path: string): string | undefined {
@@ -41,6 +52,7 @@ async function run() {
 
   const view = readArchive(dir);
   const rows = view.rows;
+  const genRows = rows.filter((r) => r.status !== undefined);
   const diagnostics = view.diagnostics;
   const frames = view.frames;
   const quarantineFiles = view.quarantineFiles;
@@ -79,12 +91,13 @@ async function run() {
   const ingestSet = [...new Set(ingestQuarantine)];
   const reviewSet = [...new Set(reviewQuarantine)];
 
-  // QC status counts and per-check counts.
-  const qcStatusCounts = countOf(frames.map((f) => f.qcStatus ?? "unknown"));
+  // QC status counts and per-check counts, from the latest generation row per Seed.
+  const latestGenRows = [...latestGen.values()];
+  const qcStatusCounts = countOf(latestGenRows.map((r) => r.qc?.status ?? "unknown"));
   const checkCounts: Record<string, Record<string, number>> = {};
   const checkNames = ["decode", "dimensions", "blank", "luminance", "aspect", "duplicate_exact", "duplicate_perceptual", "face_presence"];
   for (const name of checkNames) checkCounts[name] = { pass: 0, warn: 0, fail: 0, not_run: 0 };
-  for (const row of rows) {
+  for (const row of latestGenRows) {
     if (row.qc?.checks) {
       for (const name of checkNames) {
         const state = (row.qc.checks as Record<string, string>)[name];
@@ -93,18 +106,31 @@ async function run() {
     }
   }
 
-  // Distributions.
-  const primaryGroupCounts = countOf(frames.map((f) => f.primaryGroup ?? "unknown"));
+  // Distributions from persisted fields (generation rows only).
+  const primaryGroupCounts = countOf(genRows.map((r) => r.primaryGroup ?? "unknown"));
   const mixedCounts = { mixed: 0, single: 0 };
-  const photographyCounts = countOf(frames.map((f) => f.photographyProfile ?? "unknown"));
-  const providerCounts = countOf(frames.map((f) => (f.provider ?? "unknown")));
-  const modelCounts = countOf(frames.map((f) => (f.model ?? "unknown")));
+  const photographyCounts = countOf(genRows.map((r) => r.photographyProfile ?? "unknown"));
+  const providerCounts = countOf(genRows.map((r) => (r.provider ?? "unknown") as string));
+  const modelCounts = countOf(genRows.map((r) => (r.model ?? "unknown") as string));
+  const genderCounts = countOf(genRows.map((r) => (r.attributes?.gender ?? "unknown")));
+  const ageBandCounts: Record<string, number> = {};
+  for (const r of genRows) {
+    const age = Number(r.attributes?.age);
+    const band = Number.isFinite(age) ? `${Math.floor(age / 10) * 10}s` : "unknown";
+    ageBandCounts[band] = (ageBandCounts[band] ?? 0) + 1;
+  }
+  const skinBandCounts = countOf(genRows.map((r) => (r.bands?.skin ?? "unknown")));
+  const eyeBandCounts = countOf(genRows.map((r) => (r.bands?.eye ?? "unknown")));
+  for (const r of genRows) {
+    if (r.groups && r.groups.length > 1) mixedCounts.mixed++;
+    else if (r.groups) mixedCounts.single++;
+  }
 
   // Missing provenance.
   const missingByField: Record<string, number> = {};
   const provenanceFields = ["version", "provider", "model", "source", "prompt", "primaryGroup", "photographyProfile", "templateHash", "samplerHash"];
   for (const field of provenanceFields) {
-    const n = rows.filter((r) => (r as Record<string, unknown>)[field] === undefined).length;
+    const n = genRows.filter((r) => (r as Record<string, unknown>)[field] === undefined).length;
     if (n > 0) missingByField[field] = n;
   }
 
@@ -167,17 +193,23 @@ async function run() {
     }
   }
 
-  // Exact duplicates as groups.
+  // Exact duplicates as groups, by raw or normalized hash.
   const hashToSeeds = new Map<string, number[]>();
   for (const row of rows) {
     if (row.raw?.sha256) {
-      if (!hashToSeeds.has(row.raw.sha256)) hashToSeeds.set(row.raw.sha256, []);
-      hashToSeeds.get(row.raw.sha256)!.push(row.seed);
+      const key = `raw:${row.raw.sha256}`;
+      if (!hashToSeeds.has(key)) hashToSeeds.set(key, []);
+      hashToSeeds.get(key)!.push(row.seed);
+    }
+    if (row.normalized?.sha256) {
+      const key = `normalized:${row.normalized.sha256}`;
+      if (!hashToSeeds.has(key)) hashToSeeds.set(key, []);
+      hashToSeeds.get(key)!.push(row.seed);
     }
   }
   const exactDupGroups: { hash: string; seeds: number[] }[] = [];
-  for (const [hash, seeds] of hashToSeeds) {
-    if (seeds.length > 1) exactDupGroups.push({ hash, seeds: [...new Set(seeds)].sort((a, b) => a - b) });
+  for (const [key, seeds] of hashToSeeds) {
+    if (seeds.length > 1) exactDupGroups.push({ hash: key, seeds: [...new Set(seeds)].sort((a, b) => a - b) });
   }
   exactDupGroups.sort((a, b) => a.hash.localeCompare(b.hash));
 
@@ -185,7 +217,21 @@ async function run() {
   const perceptualPairs: { a: number; b: number; distance: number }[] = [];
   const phashBySeed = new Map<number, { algo: string; hex: string }>();
   for (const row of rows) {
-    if (row.qc?.perceptual?.hex) phashBySeed.set(row.seed, { algo: row.qc.perceptual.algo, hex: row.qc.perceptual.hex });
+    if (row.qc?.perceptual?.hex && row.qc.perceptual.algo === PHASH_ALGO) {
+      phashBySeed.set(row.seed, { algo: row.qc.perceptual.algo, hex: row.qc.perceptual.hex });
+    } else {
+      // recompute from file in memory
+      const p = join(dir, `${seedLabel(row.seed)}.png`);
+      if (existsSync(p)) {
+        try {
+          const buf = readFileSync(p);
+          const hex = await perceptualHash(buf);
+          phashBySeed.set(row.seed, { algo: PHASH_ALGO, hex });
+        } catch {
+          // skip
+        }
+      }
+    }
   }
   const seedList = [...phashBySeed.keys()].sort((a, b) => a - b);
   for (let i = 0; i < seedList.length; i++) {
@@ -239,6 +285,10 @@ async function run() {
     distributions: {
       primaryGroup: primaryGroupCounts,
       mixed: mixedCounts,
+      gender: genderCounts,
+      ageBand: ageBandCounts,
+      skinBand: skinBandCounts,
+      eyeBand: eyeBandCounts,
       photographyProfile: photographyCounts,
       provider: providerCounts,
       model: modelCounts,
@@ -251,14 +301,9 @@ async function run() {
     diagnostics,
   };
 
-  // mixed counts: need persisted groups. Use rows.
-  for (const row of rows) {
-    if (row.groups && row.groups.length > 1) mixedCounts.mixed++;
-    else if (row.groups) mixedCounts.single++;
-  }
-
+  const sortedResult = sortObjectKeys(result);
   if (json) {
-    console.log(JSON.stringify(result, null, 2));
+    console.log(JSON.stringify(sortedResult, null, 2));
   } else {
     console.log(`Dataset audit: ${dir}`);
     console.log(`Audit version: ${auditVersion}`);

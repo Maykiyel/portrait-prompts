@@ -7,7 +7,17 @@ import type {
   FrameRecord, ImportedFrame, PromptItem, ReviewState, SeedRecord, SeedState,
 } from "../core/output-folder";
 
+export const REVIEW_REASONS = [
+  "attribute_mismatch", "visible_artifacts", "not_a_portrait", "duplicate", "image_quality", "policy", "other",
+] as const;
 export type ImageItem = FrameRecord;
+export type QuarantinedFrame = {
+  seed: number;
+  reason: string;
+  kind: "ingestion" | "review";
+  frame?: string;
+  raw?: string;
+};
 export type ImportResult = ImportedFrame;
 /** What the detail route answers with: one Seed's full record, not a summary. */
 export type SeedRecordItem = SeedRecord;

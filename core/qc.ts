@@ -41,14 +41,11 @@ const EXTREME_LUMINANCE_LOW = 16;
 const EXTREME_LUMINANCE_HIGH = 239;
 
 /**
- * The perceptual hash stays an 8x8 average hash in this phase. Phase 3
- * replaces it with the 16x16 gradient hash and moves this threshold to 12.
- * Changing it here would rewrite every hash already stored in an archive.
+ * The perceptual hash is the 16x16 damped gradient hash from core/duplicates.ts.
  */
 const PERCEPTUAL_HASH_ALGO = PHASH_ALGO;
 
-/** The bit distance at which two perceptual hashes are called near duplicates. */
-export const PERCEPTUAL_FINGERPRINT_THRESHOLD = 10;
+
 
 export type BinaryInput = Buffer | Uint8Array | ArrayBuffer | {
   buffer: ArrayBuffer;
@@ -199,31 +196,7 @@ async function computePerceptualHash(buffer: Buffer): Promise<string> {
  * is what the audit calls, and it keeps working for the 8x8 hash that this
  * phase still writes.
  */
-export function hammingDistance(a: string, b: string): number {
-  if (a.length !== b.length) {
-    let distance = Math.abs(a.length - b.length) * 4;
-    const min = Math.min(a.length, b.length);
-    for (let i = 0; i < min; i++) {
-      const av = parseInt(a[i], 16);
-      const bv = parseInt(b[i], 16);
-      const xor = (isNaN(av) ? 0 : av) ^ (isNaN(bv) ? 0 : bv);
-      for (let j = 0; j < 4; j++) if (xor & (1 << j)) distance++;
-    }
-    return distance;
-  }
-  let distance = 0;
-  for (let i = 0; i < a.length; i++) {
-    const av = parseInt(a[i], 16);
-    const bv = parseInt(b[i], 16);
-    if (isNaN(av) || isNaN(bv)) {
-      if (a[i] !== b[i]) distance += 4;
-      continue;
-    }
-    const xor = av ^ bv;
-    for (let j = 0; j < 4; j++) if (xor & (1 << j)) distance++;
-  }
-  return distance;
-}
+
 
 /**
  * The rolled up status of a frame. A failure anywhere wins, then a warning,

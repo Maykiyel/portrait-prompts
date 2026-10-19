@@ -86,8 +86,8 @@ export function createApp(dataset: Dataset, registry: ProviderRegistry): Hono {
     try { body = await c.req.json(); } catch { body = {}; }
     const reason = typeof body.reason === "string" ? body.reason : "";
     const note = typeof body.note === "string" ? body.note : undefined;
-    const REVIEW_REASONS = ["attribute_mismatch", "visible_artifacts", "not_a_portrait", "duplicate", "image_quality", "policy", "other"];
-    if (!REVIEW_REASONS.includes(reason)) return c.json({ error: "reason is required" }, 400);
+    const { REVIEW_REASONS } = await import("../core/manifest-types");
+    if (!REVIEW_REASONS.includes(reason as (typeof REVIEW_REASONS)[number])) return c.json({ error: "reason is required" }, 400);
     store.rejectFrame(Number(c.req.param("seed")), reason, note);
     return c.json({ ok: true });
   });

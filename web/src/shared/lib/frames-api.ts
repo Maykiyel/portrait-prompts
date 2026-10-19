@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ImageItem, SeedRecordItem } from "@shared/api-types";
+import type { ImageItem, SeedRecordItem, QuarantinedFrame } from "@shared/api-types";
 import { http } from "./http";
 import { keys } from "./query-keys";
 
@@ -14,14 +14,6 @@ export const useFrameRecord = (seed: number | null) =>
     queryFn: () => http.get<SeedRecordItem>(`/images/${seed}`).then((r) => r.data),
     enabled: seed !== null,
   });
-
-export type QuarantinedFrame = {
-  seed: number;
-  reason: string;
-  kind: "ingestion" | "review";
-  frame?: string;
-  raw?: string;
-};
 
 const quarantined = () => http.get<QuarantinedFrame[]>("/quarantine").then((r) => r.data);
 export const useQuarantined = () => useQuery({ queryKey: ["quarantine"], queryFn: quarantined });

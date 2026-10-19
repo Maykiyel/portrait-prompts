@@ -69,12 +69,10 @@ const asAttributesSource = (value: unknown): AttributesSource | undefined =>
 const asReview = (value: unknown): ReviewDecision | undefined =>
   value === "accepted" || value === "rejected" ? value : undefined;
 
-const asReason = (value: unknown): ReviewReason | undefined => {
-  const reasons: ReviewReason[] = [
-    "attribute_mismatch", "visible_artifacts", "not_a_portrait", "duplicate", "image_quality", "policy", "other",
-  ];
-  return reasons.find((reason) => reason === value);
-};
+import { REVIEW_REASONS } from "./manifest-types";
+
+const asReason = (value: unknown): ReviewReason | undefined =>
+  REVIEW_REASONS.find((reason) => reason === value);
 
 /** The optional details, kept only when every entry carries the two fields a row writes. */
 function asDetails(value: unknown): PortraitDetail[] | undefined {

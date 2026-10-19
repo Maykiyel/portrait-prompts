@@ -90,6 +90,11 @@ export type ReviewReason =
   | "policy"
   | "other";
 
+/** The complete list of review reasons, in one place. */
+export const REVIEW_REASONS: ReviewReason[] = [
+  "attribute_mismatch", "visible_artifacts", "not_a_portrait", "duplicate", "image_quality", "policy", "other",
+];
+
 /** Which store a byte set lives in. */
 export type DuplicateLocation = "archive" | "quarantine";
 

@@ -54,7 +54,7 @@ The server listens on 127.0.0.1 only and has no login. Do not expose it to a net
 3. Download each image into one folder. Download them in order.
 4. Open **Import** and drop the downloads in. Oldest download goes to the lowest waiting prompt. The page shows each prompt next to its image, so you can check every match and change a seed from its dropdown.
 5. Click Import. Images are cropped to 2:3 and resized to 768x1152.
-6. Open **Gallery** to review. Open a frame to read its prompt, download it, or reject it if the hands, teeth or eyes look wrong. Rejecting deletes the image and puts that prompt back in the waiting list.
+6. Open **Gallery** to review. Open a frame to read its prompt, download it, accept it, or reject it if the hands, teeth or eyes look wrong. Rejecting moves the Frame and its Raw image to `out/quarantine/` (byte-identical) and puts that prompt back in the waiting list.
 
 ### API route, paid
 

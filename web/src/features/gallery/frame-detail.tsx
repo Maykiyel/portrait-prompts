@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight, Copy, Download, Trash2, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import type { ImageItem } from "@shared/api-types";
+import { REVIEW_REASONS } from "@shared/api-types";
 import { Button } from "@/shared/components/ui/button";
 import { DialogDescription, DialogTitle } from "@/shared/components/ui/dialog";
 import { Badge } from "@/shared/components/ui/badge";
@@ -10,16 +11,6 @@ import { useFrameRecord } from "@/shared/lib/frames-api";
 import { copyText, seedLabel } from "@/lib/text";
 import { useRejectImage } from "./reject-image";
 import { useAcceptImage } from "./accept-image";
-
-const REVIEW_REASONS = [
-  "attribute_mismatch",
-  "visible_artifacts",
-  "not_a_portrait",
-  "duplicate",
-  "image_quality",
-  "policy",
-  "other",
-] as const;
 
 export function FrameDetail({ image, hasNewer, hasOlder, go, onGone }: { image: ImageItem; hasNewer: boolean; hasOlder: boolean; go: (d: -1 | 1) => void; onGone: () => void }) {
   const reject = useRejectImage();
@@ -103,6 +94,21 @@ export function FrameDetail({ image, hasNewer, hasOlder, go, onGone }: { image: 
           <div className="rounded-md border p-3 text-xs">
             <h3 className="mb-2 text-sm font-medium">Review history</h3>
             <p>{full.review.review}{full.review.reason ? `: ${full.review.reason}` : ""}{full.review.note ? ` (${full.review.note})` : ""}</p>
+          </div>
+        )}
+
+        {full?.frame?.duplicates && (
+          <div className="rounded-md border p-3 text-xs">
+            <h3 className="mb-2 text-sm font-medium">Duplicate matches</h3>
+            {full.frame.duplicates.exact.length > 0 && (
+              <p>Exact: {full.frame.duplicates.exact.map((m) => `Seed ${m.seed} (${m.where}, ${m.kind})`).join(", ")}</p>
+            )}
+            {full.frame.duplicates.perceptual.length > 0 && (
+              <p>Perceptual: {full.frame.duplicates.perceptual.map((m) => `Seed ${m.seed} (${m.where}, ${m.distance} bits)`).join(", ")}</p>
+            )}
+            {full.frame.duplicates.uncomparable.length > 0 && (
+              <p>Uncomparable: {full.frame.duplicates.uncomparable.map((m) => `Seed ${m.seed}: ${m.reason}`).join(", ")}</p>
+            )}
           </div>
         )}
 
