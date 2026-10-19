@@ -15,7 +15,6 @@
     "prompts": "tsx cli/export-prompts.ts",
     "import-images": "tsx cli/import-images.ts",
     "status": "tsx cli/status.ts",
-    "dataset-audit": "tsx cli/dataset-audit.ts",
     "dataset-audit": "tsx cli/dataset-audit.ts"
   },
   "devDependencies": {
