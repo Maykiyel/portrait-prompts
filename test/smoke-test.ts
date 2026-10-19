@@ -28,6 +28,7 @@ import { refusalFor } from "../server/jobs";
 import { createStore } from "../server/store";
 import { runAudit } from "./smoke-audit";
 import { runCliContract } from "./smoke-cli";
+import { runManifestChecks } from "./smoke-manifest";
 import "./smoke-classifiers";
 import {
   asyncCode, bad, captureOutput, check, errorCode, good, jobOf, promptFiles, refused, repoRoot, results, withGenerators,
@@ -47,6 +48,11 @@ const policy = policyFor(providers);
 // The seam audit, in its own file: it reads source text to keep the
 // ownership claim global, while every other check here asks the module.
 runAudit();
+
+// The Manifest checks, in their own file for the same reason. They write real
+// rows through the real paths and read them back off disk, so they own
+// fixtures and clean them up, which is more than the rest of this file does.
+await runManifestChecks();
 
 // The five-digit Seed label is stated twice: the module owns it for
 // filenames and the command line, and the browser states it for display,
