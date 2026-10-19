@@ -41,6 +41,13 @@ function latestStatuses(rows: ManifestRow[]): Map<number, ManifestRow> {
   return latest;
 }
 
+/** The last row per Seed that was a generation or import attempt. A review row is a decision, not an attempt. */
+function latestGenerations(rows: ManifestRow[]): Map<number, ManifestRow> {
+  const latest = new Map<number, ManifestRow>();
+  for (const row of rows) if (row.status !== undefined) latest.set(row.seed, row);
+  return latest;
+}
+
 async function run() {
   const dir = arg("--dir", arg("--out", process.argv.slice(2).filter((a) => !a.startsWith("--") && a !== "--")[0] ?? "out"))!;
   const json = process.argv.includes("--json");
@@ -70,10 +77,11 @@ async function run() {
   const currentVersion = status.version;
 
   const lastBySeed = latestStatuses(rows);
-  const generationStatusCounts = countOf([...lastBySeed.values()].map((r) => r.status ?? "unknown"));
+  const lastGenerationBySeed = latestGenerations(rows);
+  const generationStatusCounts = countOf([...lastGenerationBySeed.values()].map((r) => r.status ?? "unknown"));
 
   const accepted = frames.length;
-  const rejectedSeeds = [...lastBySeed.values()].filter((r) => r.status === "rejected").length;
+  const rejectedSeeds = [...lastBySeed.values()].filter((r) => r.review === "rejected").length;
   const reviewStatusCounts = {
     accepted_frames: accepted,
     rejected_seeds: rejectedSeeds,
@@ -133,8 +141,8 @@ async function run() {
     }
 
     frameHashes.push(sha);
-    frameFingerprints.push(result.fingerprint);
-    frameResults.push({ seed: frame.seed, sha256: sha, fingerprint: result.fingerprint, flags: result.flags });
+    frameFingerprints.push(result.perceptual.hex);
+    frameResults.push({ seed: frame.seed, sha256: sha, fingerprint: result.perceptual.hex, flags: result.flags });
 
     for (const flag of result.flags) qcFlagCounts[flag] = (qcFlagCounts[flag] ?? 0) + 1;
 
@@ -314,7 +322,7 @@ async function run() {
   if (manifestError) console.log(`Manifest read error: ${manifestError}`);
 
   printSection("Counts by generation status (latest per seed)");
-  printCounts("status", generationStatusCounts, lastBySeed.size || undefined);
+  printCounts("status", generationStatusCounts, lastGenerationBySeed.size || undefined);
 
   printSection("Counts by review status");
   console.log(`  accepted frames: ${reviewStatusCounts.accepted_frames}`);

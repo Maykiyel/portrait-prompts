@@ -56,6 +56,10 @@ export function createApp(dataset: Dataset, registry: ProviderRegistry): Hono {
   });
 
   api.get("/images", (c) => c.json(store.listImages()));
+  // The one full record, for the view that opens a single Frame. The list above
+  // answers with a summary per Frame on purpose, so this is where the digests,
+  // the sampled attributes and the QC record are read.
+  api.get("/images/:seed", (c) => c.json(store.frameRecord(Number(c.req.param("seed")))));
   api.get("/images/:seed/thumb", async (c) => {
     const width = Math.min(Math.max(Number(c.req.query("w") ?? 320), 80), 768);
     c.header("Content-Type", "image/webp");

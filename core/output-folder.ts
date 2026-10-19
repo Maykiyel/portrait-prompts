@@ -1,10 +1,41 @@
+import { createHash } from "node:crypto";
 import { appendFileSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ReadStream } from "node:fs";
 import sharp from "sharp";
-import { ArchiveError, type ArchiveErrorCode } from "./errors";
-import { buildPrompt, composePrompt } from "./sampler";
-import { qc, type QCResult, type QcFlag } from "./qc";
+import { ArchiveError, FrameQuarantined, type ArchiveErrorCode } from "./errors";
+import { buildPrompt, composePrompt, samplePortrait, samplerHash, templateHash } from "./sampler";
+import { qc, type QCResult, type QcFlag, type QcStatus } from "./qc";
+import { readRow, sampledPortrait } from "./manifest-reader";
+import type {
+  AttributesSource, DuplicateRecord, FrameSource, GenerationParams, GenerationStatus,
+  ImageDigest, IngestQuarantine, ManifestRow, NormalizedDigest, SampledPortrait, SchemaVersion,
+} from "./manifest-types";
+
+// The row shape is stated in the types module and the reading of it in the reader,
+// and both are re-exported from here because this module is the only thing that
+// owns the archive. Anything else asks this module for rows rather than reaching
+// past it, and that claim is enforced over the whole tree rather than trusted.
+export { FrameQuarantined };
+export type {
+  AttributesSource, DuplicateRecord, FrameSource, GenerationParams, GenerationRow, GenerationStatus,
+  ImageDigest, IngestQuarantine, ManifestRow, NormalizedDigest, ReviewReason, ReviewRow,
+  SampledPortrait, SchemaVersion, SkinEyeBands,
+} from "./manifest-types";
+
+/** The schema version stamped on every row this work writes. */
+const SCHEMA = 2 as const satisfies SchemaVersion;
+
+const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * The shape a Frame is normalized to, and the steps that make it.
+ *
+ * These are written down once, here, because they are used twice: once to build
+ * the artifact and once to record what built it. A row that names steps nobody
+ * ran is worse than no steps at all, so the two cannot come apart.
+ */
+const NORMALIZE = { width: 768, height: 1152, fit: "cover", position: "attention", format: "png" } as const;
 
 export type FolderStatus = {
   version: string;
@@ -20,83 +51,89 @@ export type FolderStatus = {
   problemCode?: ArchiveErrorCode;
 };
 
+/**
+ * What the browser is told about a Frame, and nothing more.
+ *
+ * This is the whole per-Frame payload for a Gallery grid, so it holds the facts
+ * a grid draws and nothing else. The QC record, the digests and the sampled
+ * attributes stay in the archive: there is a route for one Frame's full record,
+ * and sending all of it for every Frame in the list is what made the payload grow
+ * with fields no reader used.
+ */
 export type FrameRecord = {
   seed: number;
   version: string;
   source: "api" | "manual" | "unknown";
-  /** Which Provider made this. Rows written before Providers existed name the only one that did. */
+  /** Which Provider made this. Absent when the row never named one. */
   provider?: string;
   model?: string;
   prompt: string;
   updatedAt: string;
-  /** Quality check result for the stored Frame, mapped one-for-one from `core/qc.ts`. */
-  qc?: QCResult;
-  qcResult?: QCResult;
-  qualityCheck?: QCResult;
-  quality?: QCResult;
-  rawHash?: string;
-  rawSha256?: string;
-  sha256?: string;
-  hash?: string;
-  frameHash?: string;
-  normalizedFrameHash?: string;
-  frameSha256?: string;
-  perceptualFingerprint?: string;
-  fingerprint?: string;
-  width?: number;
-  height?: number;
-  aspectRatio?: number;
+  primaryGroup?: string;
+  photographyProfile?: string;
+  /** The roll-up the stored QC record reached. Absent when no QC record was stored. */
+  qcStatus?: QcStatus;
   flags?: QcFlag[];
-  qcVersion?: string;
-  /** Where a Frame that failed the quality check was put instead of the archive. */
-  quarantined?: boolean;
-  quarantinePath?: string;
 };
 
 export type PromptItem = { seed: number; prompt: string };
 
-export type Attempt = {
+/**
+ * One Seed's full record, for a view that shows a single Frame in detail.
+ *
+ * The generation row and the review decision are kept apart rather than merged,
+ * because they are two rows in an append-only archive and a merged object would
+ * be a row nobody ever wrote.
+ */
+export type SeedRecord = {
   seed: number;
-  /** `blocked` is a refusal no run will ever clear, so the Seed is finished. `failed` is one a later run might clear. */
-  status: "ok" | "failed" | "blocked" | "rejected";
+  /** The latest generation or import row for this Seed, as stored. */
+  frame: ManifestRow;
+  /** The latest review decision for this Seed, when one has been made. */
+  review?: ManifestRow;
+};
+
+/**
+ * A Frame offered to the archive, with the one sampling that built its Prompt.
+ *
+ * `sample` is how the Prompt and the stored attributes are guaranteed to agree:
+ * hand the same sampling in and the row cannot describe two Portraits. A caller
+ * that has not sampled asks for one below instead, and pays for exactly one
+ * draw either way.
+ */
+export type FrameWrite = {
+  seed: number;
+  buffer: Buffer;
+  sample?: SampledPortrait;
+  prompt?: string;
   provider?: string;
   model?: string;
-  source?: "manual" | "api";
+  source?: FrameSource;
+  file?: string;
+  attributesSource?: AttributesSource;
+  params?: GenerationParams | null;
+  ts?: string;
+};
+
+/** One generation or import attempt, as the caller reports it. */
+export type GenerationRecord = {
+  seed: number;
+  status: GenerationStatus;
+  provider?: string;
+  model?: string;
+  source?: FrameSource;
   file?: string;
   prompt?: string;
   error?: string;
   ts?: string;
+  attributesSource?: AttributesSource;
+  params?: GenerationParams | null;
+  sample?: SampledPortrait;
+  raw?: ImageDigest;
+  normalized?: NormalizedDigest;
   qc?: QCResult;
-  qcResult?: QCResult;
-  qualityCheck?: QCResult;
-  quality?: QCResult;
-  rawHash?: string;
-  rawSha256?: string;
-  sha256?: string;
-  hash?: string;
-  frameHash?: string;
-  normalizedFrameHash?: string;
-  frameSha256?: string;
-  perceptualFingerprint?: string;
-  fingerprint?: string;
-  width?: number;
-  height?: number;
-  aspectRatio?: number;
-  flags?: QcFlag[];
-  quarantined?: boolean;
-  quarantinePath?: string;
-};
-
-export type FrameWrite = {
-  seed: number;
-  buffer: Buffer;
-  provider?: string;
-  model?: string;
-  source?: "manual" | "api";
-  file?: string;
-  prompt?: string;
-  ts?: string;
-  qc?: QCResult;
+  duplicates?: DuplicateRecord;
+  quarantine?: IngestQuarantine;
 };
 
 export type ImportedFrame = { seed: number; file: string; ok: boolean; warning?: string; error?: string; qc?: QCResult };
@@ -108,17 +145,19 @@ export type OutputFolder = Readonly<{
   issueSeeds(count: number): number[];
   claimSeeds(count: number, commit?: boolean): number[];
   listFrames(): FrameRecord[];
+  /** One Seed's full record, for the detail view. */
+  frameRecord(seed: number): SeedRecord | undefined;
   /** Read-only view of the Manifest's rows, for audit and reporting. */
   manifestRows(): ManifestRow[];
-  /** Alias of `manifestRows`, for callers that think in Attempts. */
-  listAttempts(): ManifestRow[];
   hasFrame(seed: number): boolean;
   readFrame(seed: number, raw?: boolean): ReadStream;
   readThumbnail(seed: number, width: number): Promise<ReadStream>;
   writeFrame(frame: FrameWrite): Promise<void>;
   importFrames(files: FileForImport[], seeds: number[]): Promise<ImportedFrame[]>;
   rejectFrame(seed: number): void;
-  recordAttempt(attempt: Attempt): void;
+  recordAttempt(attempt: GenerationRecord): void;
+  /** The Prompt and the attributes that built it, from a single sampling. */
+  sampleFor(seed: number, useNegative?: boolean): SampledPortrait;
   promptFor(seed: number, useNegative?: boolean): string;
   promptsFor(seeds: number[], useNegative?: boolean): PromptItem[];
   quarantineDir(): string;
@@ -126,43 +165,9 @@ export type OutputFolder = Readonly<{
   quarantinedSeeds(): number[];
   quarantineFrame(seed: number, buffer: Buffer, result?: QCResult): Promise<void>;
   qcFrame(seed: number): Promise<QCResult | undefined>;
-  supportedExtensions(): string[];
-  extensions: string[];
 }>;
 
 type Counter = { next: number; salt: string };
-export type ManifestRow = {
-  seed: number;
-  status: string;
-  version?: string;
-  provider?: string;
-  model?: string;
-  source?: string;
-  prompt?: string;
-  ts?: string;
-  qc?: QCResult;
-  qcResult?: QCResult;
-  qualityCheck?: QCResult;
-  quality?: QCResult;
-  rawHash?: string;
-  rawSha256?: string;
-  sha256?: string;
-  hash?: string;
-  frameHash?: string;
-  normalizedFrameHash?: string;
-  frameSha256?: string;
-  perceptualFingerprint?: string;
-  fingerprint?: string;
-  width?: number;
-  height?: number;
-  aspectRatio?: number;
-  flags?: QcFlag[];
-  qcVersion?: string;
-  file?: string;
-  error?: string;
-  quarantined?: boolean;
-  quarantinePath?: string;
-};
 
 const pad = (seed: number) => String(seed).padStart(5, "0");
 
@@ -211,6 +216,12 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
   const version = rawTemplate.match(/^#\s*(.+)\n/)?.[1]?.trim() ?? "unversioned";
   const template = rawTemplate.replace(/^#.*\n/, "");
   const negative = readFileSync("negative.txt", "utf8").trim();
+  // The two fingerprints of the definitions this folder prompts from, hashed once
+  // here and stamped on every row it writes. A reader can then tell which Prompt
+  // text and which sampler tables built a Seed without trusting the version tag
+  // alone, which is a thing a person can forget to bump.
+  const templateFingerprint = templateHash(rawTemplate);
+  const samplerFingerprint = samplerHash();
 
   const frameFile = (seed: number) => join(root, `${pad(seed)}.png`);
   const rawFile = (seed: number) => join(root, "raw", `${pad(seed)}.png`);
@@ -218,6 +229,19 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
   const manifestFile = join(root, "manifest.jsonl");
   const thumbDir = join(root, "thumbs");
   const quarantineDirPath = join(root, "quarantine");
+
+  /**
+   * The Prompt for a Seed and the sample that filled it, from one draw.
+   *
+   * These are two views of a single sampling, and a row that held one from each
+   * would describe a Portrait nobody asked for. Everything that writes a row
+   * asks here, so there is one call that answers both rather than two that can
+   * disagree.
+   */
+  const sampleFor = (seed: number, useNegative = false): SampledPortrait => {
+    validateSeed(seed);
+    return sampledPortrait(seed, composePrompt(template, negative, seed, salt, useNegative), samplePortrait(seed, salt));
+  };
 
   const readCounter = (): Counter | undefined => {
     if (!existsSync(counterFile)) return undefined;
@@ -274,10 +298,61 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     return existsSync(frameFile(seed));
   };
 
+  /** Every row on disk, each one read by the one reader that knows all three builds. */
+  const readManifest = (): ManifestRow[] =>
+    existsSync(manifestFile)
+      ? readFileSync(manifestFile, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => readRow(JSON.parse(line)))
+        .filter((row): row is ManifestRow => row !== undefined)
+      : [];
+
+  /** What each Seed's rows add up to: its latest generation attempt and its latest review decision. */
+  type SeedState = { generation?: ManifestRow; review?: ManifestRow };
+
+  const latestBySeed = (): Map<number, SeedState> => {
+    const latest = new Map<number, SeedState>();
+    for (const row of readManifest()) {
+      const state = latest.get(row.seed) ?? {};
+      if (row.review !== undefined) state.review = row;
+      else if (row.status !== undefined) state.generation = row;
+      latest.set(row.seed, state);
+    }
+    return latest;
+  };
+
+  /**
+   * What each Seed's last generation attempt came to, once review has had its say.
+   *
+   * A review row is never an outcome of its own: it is a decision about a Frame,
+   * not an attempt to make one. It does clear the outcome, because a rejected
+   * Frame puts its Seed back to waiting and a waiting Seed is not a failed one.
+   * That is what the Manifest always did, where the rejection was itself a row
+   * carrying a status, and keeping it is what makes the failed count say which
+   * Seeds a later run will actually try.
+   */
+  const latestOutcomes = (): Map<number, GenerationStatus> => {
+    const outcomes = new Map<number, GenerationStatus>();
+    for (const [seed, state] of latestBySeed()) {
+      if (state.review?.review === "rejected" || state.generation?.status === undefined) outcomes.delete(seed);
+      else outcomes.set(seed, state.generation.status);
+    }
+    return outcomes;
+  };
+
+  /** The row a Frame on disk is described by, when it has one that still stands. */
+  const frameRowFor = (latest: Map<number, SeedState>, seed: number): ManifestRow | undefined => {
+    const state = latest.get(seed);
+    return state && state.review?.review !== "rejected" && state.generation?.status === "ok"
+      ? state.generation
+      : undefined;
+  };
+
   const waitingSeeds = (): number[] => {
     const counter = readCounter();
     assertSalt(counter);
-    const latest = latestStatuses();
+    const latest = latestOutcomes();
     const waiting: number[] = [];
     // A Seed whose Prompt was refused is finished, not waiting. It has no Frame
     // and will never get one, so handing it out again would spend a run on a
@@ -285,21 +360,6 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     for (let seed = 1; seed < (counter?.next ?? 1); seed++)
       if (!hasFrame(seed) && latest.get(seed) !== "blocked") waiting.push(seed);
     return waiting;
-  };
-
-  const readManifest = (): ManifestRow[] => {
-    if (!existsSync(manifestFile)) return [];
-    return readFileSync(manifestFile, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as ManifestRow);
-  };
-
-  /**
-   * The last Attempt for every Seed, which is what "what happened to this Seed"
-   * is answered by. The Manifest is append-only, so the last row written wins.
-   */
-  const latestStatuses = (): Map<number, string> => {
-    const latest = new Map<number, string>();
-    for (const row of readManifest()) latest.set(row.seed, row.status);
-    return latest;
   };
 
   const frameSeeds = (): number[] => {
@@ -313,7 +373,7 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
 
   const status = (): FolderStatus => {
     const done = frameSeeds().length;
-    const latest = latestStatuses();
+    const latest = latestOutcomes();
     const failed = [...latest.values()].filter((value) => value === "failed").length;
     const blocked = [...latest.values()].filter((value) => value === "blocked").length;
     const base = { version, done, failed, blocked, saltSet: salt !== "" };
@@ -351,51 +411,48 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     return [...waiting, ...Array.from({ length: fresh }, (_, i) => next + i)];
   };
 
+  /**
+   * What the archive knows about every Frame on disk, and nothing else.
+   *
+   * Read off disk rather than off the Manifest, because the file is the fact: a
+   * Seed with a Frame is in the Gallery whether or not a row survives, and a row
+   * that survives for a Seed whose Frame was deleted describes nothing.
+   */
   const listFrames = (): FrameRecord[] => {
-    const latestOk = new Map<number, ManifestRow>();
-    for (const row of readManifest()) {
-      if (row.status === "ok") latestOk.set(row.seed, row);
-      else if (row.status === "rejected") latestOk.delete(row.seed);
-    }
+    const latest = latestBySeed();
     return frameSeeds().map((seed) => {
-      const row = latestOk.get(seed);
-      const qcResult = row?.qc ?? row?.qcResult ?? row?.qualityCheck ?? row?.quality;
-      const flags = row?.flags ?? qcResult?.flags;
-      const quarantined = row?.quarantined ?? false;
+      const row = frameRowFor(latest, seed);
       return {
         seed,
         version: row?.version ?? "unknown",
-        source: row?.source === "manual" ? "manual" : row ? "api" : "unknown",
-        // Rows written before a Manifest carried a provider name one that was
-        // available at the time, so this reads a fact about the row rather than
-        // guessing at it. The default is stated here and nowhere else, because
-        // this is the only module that reads the Manifest.
-        provider: row ? (row.provider ?? "gemini") : undefined,
-        model: row?.model,
+        source: row?.source ?? "unknown",
+        // Whatever the row said, and nothing said on its behalf. An older row that
+        // never named a Provider leaves this absent rather than guessing the one
+        // that happened to be available when it was written.
+        provider: row?.provider ?? undefined,
+        model: row?.model ?? undefined,
         prompt: row?.prompt ?? "",
         updatedAt: statSync(frameFile(seed)).mtime.toISOString(),
-        qc: qcResult,
-        qcResult,
-        qualityCheck: qcResult,
-        quality: qcResult,
-        rawHash: row?.rawHash ?? row?.rawSha256 ?? qcResult?.rawHash ?? qcResult?.rawSha256,
-        rawSha256: row?.rawSha256 ?? row?.rawHash ?? qcResult?.rawSha256 ?? qcResult?.rawHash,
-        sha256: row?.sha256 ?? row?.rawHash ?? row?.rawSha256 ?? qcResult?.sha256 ?? qcResult?.rawHash,
-        hash: row?.hash ?? row?.rawHash ?? row?.rawSha256 ?? qcResult?.hash ?? qcResult?.rawHash,
-        frameHash: row?.frameHash ?? row?.frameSha256 ?? row?.normalizedFrameHash ?? qcResult?.frameHash ?? qcResult?.normalizedFrameHash,
-        normalizedFrameHash: row?.normalizedFrameHash ?? row?.frameHash ?? qcResult?.normalizedFrameHash ?? qcResult?.frameHash,
-        frameSha256: row?.frameSha256 ?? row?.frameHash ?? qcResult?.frameSha256 ?? qcResult?.frameHash,
-        perceptualFingerprint: row?.perceptualFingerprint ?? row?.fingerprint ?? qcResult?.perceptualFingerprint ?? qcResult?.fingerprint,
-        fingerprint: row?.fingerprint ?? row?.perceptualFingerprint ?? qcResult?.fingerprint ?? qcResult?.perceptualFingerprint,
-        width: row?.width ?? qcResult?.width ?? qcResult?.dimensions?.width,
-        height: row?.height ?? qcResult?.height ?? qcResult?.dimensions?.height,
-        aspectRatio: row?.aspectRatio ?? qcResult?.aspectRatio,
-        flags: flags ?? qcResult?.flags,
-        qcVersion: row?.qcVersion ?? qcResult?.version,
-        quarantined,
-        quarantinePath: row?.quarantinePath,
+        ...(row?.primaryGroup === undefined ? {} : { primaryGroup: row.primaryGroup }),
+        ...(row?.photographyProfile === undefined ? {} : { photographyProfile: row.photographyProfile }),
+        ...(row?.qc === undefined ? {} : { qcStatus: row.qc.status, flags: row.qc.flags }),
       };
     });
+  };
+
+  /**
+   * One Seed's full record, for the detail view.
+   *
+   * The grid gets a summary per Frame and this gets the row as stored, which is
+   * the only place the digests, the sampled attributes and the QC record are
+   * read. Nothing about it is derived here: a field the row does not carry is
+   * not on the answer.
+   */
+  const frameRecord = (seed: number): SeedRecord | undefined => {
+    validateSeed(seed);
+    const state = latestBySeed().get(seed);
+    if (!state?.generation) return undefined;
+    return { seed, frame: state.generation, ...(state.review === undefined ? {} : { review: state.review }) };
   };
 
   const readFrame = (seed: number, raw = false): ReadStream => {
@@ -417,63 +474,82 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     return createReadStream(dest);
   };
 
-  const recordAttempt = (attempt: Attempt): void => {
+  /**
+   * Appends one row. The archive is append-only and a row is never rewritten, so
+   * this is the only way anything lands in it.
+   *
+   * Fields that came out undefined are dropped rather than written, because an
+   * absent key is how this archive says it does not know, and writing the key
+   * anyway would say something else.
+   */
+  const appendRow = (row: Record<string, unknown>): void => {
+    mkdirSync(root, { recursive: true });
+    for (const key of Object.keys(row)) if (row[key] === undefined) delete row[key];
+    appendFileSync(manifestFile, JSON.stringify(row) + "\n");
+  };
+
+  /**
+   * Records one generation or import attempt, with nothing filled in on the
+   * caller's behalf.
+   *
+   * The two fields a caller can be wrong about are settled here rather than
+   * above. A row naming no source was not a manual import, because a manual
+   * import is the only ingestion here that has a file to name, so the source
+   * defaults to `api`. Everything else that is missing is left missing: a
+   * Provider, a model, the bytes and the QC record of an attempt that received
+   * none, and the sampled attributes of a Seed nobody sampled.
+   */
+  const recordAttempt = (attempt: GenerationRecord): void => {
     validateSeed(attempt.seed);
     const counter = readCounter();
     assertSalt(counter);
-    mkdirSync(root, { recursive: true });
-    if (attempt.status === "rejected") {
-      appendFileSync(manifestFile, JSON.stringify({ seed: attempt.seed, status: "rejected", ts: attempt.ts ?? new Date().toISOString() }) + "\n");
-      return;
+    const manual = attempt.source === "manual";
+    const sample = attempt.sample;
+    appendRow({
+      schema: SCHEMA,
+      seed: attempt.seed,
+      version,
+      salt,
+      ts: attempt.ts ?? new Date().toISOString(),
+      status: attempt.status,
+      error: attempt.error,
+      source: attempt.source ?? "api",
+      // `null` on a manual row, because no Provider was asked for anything. On
+      // an api row a Provider that was never named stays absent: null there would
+      // claim one does not apply, and it very much does.
+      provider: manual ? null : attempt.provider,
+      model: manual ? null : attempt.model,
+      file: attempt.file,
+      prompt: attempt.prompt ?? sample?.prompt ?? buildPrompt(template, attempt.seed, salt).trim(),
+      templateHash: templateFingerprint,
+      samplerHash: samplerFingerprint,
+      attributes: sample?.attributes,
+      details: sample?.details,
+      primaryGroup: sample?.primaryGroup,
+      groups: sample?.groups,
+      ethnicities: sample?.ethnicities,
+      photographyProfile: sample?.photographyProfile,
+      bands: sample?.bands,
+      attributesSource: attempt.attributesSource,
+      params: manual ? null : attempt.params,
+      raw: attempt.raw,
+      normalized: attempt.normalized,
+      qc: attempt.qc,
+      // Absent until the duplicate check runs. An empty list would claim a check
+      // that never happened, which is the one thing an absent key is for.
+      duplicates: attempt.duplicates,
+      quarantine: attempt.quarantine,
+    });
+  };
+
+  /** The measured size of some bytes, or zeroes when they will not read at all. */
+  const measure = async (bytes: Buffer): Promise<{ width: number; height: number }> => {
+    try {
+      const meta = await sharp(bytes).metadata();
+      return { width: meta.width ?? 0, height: meta.height ?? 0 };
+    } catch {
+      return { width: 0, height: 0 };
     }
-    const { seed, provider, model, source, file, prompt, status: result, error, ts, qc: qcResult } = attempt;
-    const effectiveQc = qcResult ?? attempt.qcResult ?? attempt.qualityCheck ?? attempt.quality;
-    const row: Record<string, unknown> = { seed, version, salt };
-    if (provider !== undefined) row.provider = provider;
-    if (model !== undefined) row.model = model;
-    if (source !== undefined) row.source = source;
-    if (file !== undefined) row.file = file;
-    row.prompt = prompt ?? buildPrompt(template, seed, salt).trim();
-    row.status = result;
-    if (error !== undefined) row.error = error;
-    if (ts !== undefined) row.ts = ts;
-    if (effectiveQc !== undefined) {
-      row.qc = effectiveQc;
-      row.qcResult = effectiveQc;
-      row.qualityCheck = effectiveQc;
-      row.quality = effectiveQc;
-      row.rawHash = attempt.rawHash ?? attempt.rawSha256 ?? effectiveQc.rawHash ?? effectiveQc.rawSha256;
-      row.rawSha256 = attempt.rawSha256 ?? attempt.rawHash ?? effectiveQc.rawSha256 ?? effectiveQc.rawHash;
-      row.sha256 = attempt.sha256 ?? attempt.rawHash ?? attempt.rawSha256 ?? effectiveQc.sha256 ?? effectiveQc.rawHash;
-      row.hash = attempt.hash ?? attempt.rawHash ?? attempt.rawSha256 ?? effectiveQc.hash ?? effectiveQc.rawHash;
-      row.frameHash = attempt.frameHash ?? attempt.frameSha256 ?? attempt.normalizedFrameHash ?? effectiveQc.frameHash ?? effectiveQc.normalizedFrameHash;
-      row.normalizedFrameHash = attempt.normalizedFrameHash ?? attempt.frameHash ?? effectiveQc.normalizedFrameHash ?? effectiveQc.frameHash;
-      row.frameSha256 = attempt.frameSha256 ?? attempt.frameHash ?? effectiveQc.frameSha256 ?? effectiveQc.frameHash;
-      row.perceptualFingerprint = attempt.perceptualFingerprint ?? attempt.fingerprint ?? effectiveQc.perceptualFingerprint ?? effectiveQc.fingerprint;
-      row.fingerprint = attempt.fingerprint ?? attempt.perceptualFingerprint ?? effectiveQc.fingerprint ?? effectiveQc.perceptualFingerprint;
-      row.width = attempt.width ?? effectiveQc.width ?? effectiveQc.dimensions?.width;
-      row.height = attempt.height ?? effectiveQc.height ?? effectiveQc.dimensions?.height;
-      row.aspectRatio = attempt.aspectRatio ?? effectiveQc.aspectRatio;
-      row.flags = attempt.flags ?? effectiveQc.flags;
-      row.qcVersion = effectiveQc.version;
-    } else if (attempt.rawHash !== undefined || attempt.flags !== undefined) {
-      if (attempt.rawHash !== undefined) row.rawHash = attempt.rawHash;
-      if (attempt.rawSha256 !== undefined) row.rawSha256 = attempt.rawSha256;
-      if (attempt.sha256 !== undefined) row.sha256 = attempt.sha256;
-      if (attempt.hash !== undefined) row.hash = attempt.hash;
-      if (attempt.frameHash !== undefined) row.frameHash = attempt.frameHash;
-      if (attempt.normalizedFrameHash !== undefined) row.normalizedFrameHash = attempt.normalizedFrameHash;
-      if (attempt.frameSha256 !== undefined) row.frameSha256 = attempt.frameSha256;
-      if (attempt.perceptualFingerprint !== undefined) row.perceptualFingerprint = attempt.perceptualFingerprint;
-      if (attempt.fingerprint !== undefined) row.fingerprint = attempt.fingerprint;
-      if (attempt.width !== undefined) row.width = attempt.width;
-      if (attempt.height !== undefined) row.height = attempt.height;
-      if (attempt.aspectRatio !== undefined) row.aspectRatio = attempt.aspectRatio;
-      if (attempt.flags !== undefined) row.flags = attempt.flags;
-    }
-    if (attempt.quarantined !== undefined) row.quarantined = attempt.quarantined;
-    if (attempt.quarantinePath !== undefined) row.quarantinePath = attempt.quarantinePath;
-    appendFileSync(manifestFile, JSON.stringify(row) + "\n");
   };
 
   const writeFrame = async (frame: FrameWrite): Promise<void> => {
@@ -483,36 +559,84 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     if (!counter || frame.seed >= counter.next || hasFrame(frame.seed))
       throw new ArchiveError("seed-not-waiting", `Seed ${frame.seed} is not waiting for a Frame`);
 
-    // Every Frame is checked with the module that owns image quality before it
-    // is accepted, so a corrupt or undecodable download is not mistaken for a
-    // finished Frame. A Frame that fails the check is quarantined with its
-    // original bytes rather than written into the archive.
-    const quality = frame.qc ?? await qc(frame.buffer);
-    const decodeFailed = !quality.decodeOk || quality.width === 0 || quality.height === 0;
-    if (decodeFailed) {
+    // One sampling answers for the Prompt and the attributes together. A caller
+    // that already drew it hands that draw in rather than paying for a second
+    // one, which is the whole point of asking for both at once.
+    const sample = frame.sample ?? sampleFor(frame.seed);
+    const source = frame.source ?? "api";
+    const provenance = {
+      ...frame,
+      source,
+      prompt: frame.sample?.prompt ?? frame.prompt ?? sample.prompt,
+      sample,
+      attributesSource: frame.attributesSource ?? (source === "manual" ? "import" as const : "run" as const),
+      params: frame.params === undefined && source === "manual" ? null : frame.params,
+    };
+
+    // The bytes as they arrived, hashed before anything has looked at them. The
+    // raw hash is a statement about what came back and nothing else.
+    const rawBytes = frame.buffer;
+    const rawSize = await measure(rawBytes);
+    const raw: ImageDigest = { sha256: sha256(rawBytes), bytes: rawBytes.length, ...rawSize };
+
+    // The artifact is built once, hashed and then written from that one buffer.
+    // Hashing one pipeline's output while writing another's was the defect: the
+    // two were built with different crops, so the recorded hash described bytes
+    // that were never stored, and nothing could check it against the Frame.
+    let normalizedBytes: Buffer | undefined;
+    let normalized: NormalizedDigest | undefined;
+    if (rawSize.width > 0 && rawSize.height > 0) {
+      normalizedBytes = await sharp(rawBytes)
+        .resize(NORMALIZE.width, NORMALIZE.height, { fit: NORMALIZE.fit, position: NORMALIZE.position })
+        .png()
+        .toBuffer();
+      const written = await measure(normalizedBytes);
+      normalized = {
+        sha256: sha256(normalizedBytes),
+        bytes: normalizedBytes.length,
+        ...written,
+        steps: { fit: NORMALIZE.fit, position: NORMALIZE.position, format: NORMALIZE.format },
+      };
+    }
+
+    // Every Frame is checked with the module that owns image quality before it is
+    // accepted, so a corrupt or undecodable download is not mistaken for a
+    // finished Frame. The checks read the artifact when there is one, because
+    // blank and luminance are questions about the Frame rather than about the
+    // bytes it was cut from.
+    const quality = await qc(rawBytes, normalizedBytes ? { normalized: normalizedBytes } : {});
+
+    // A Frame that cannot be read at all is quarantined with the bytes that
+    // arrived, rather than written into the archive.
+    if (quality.checks.decode === "fail" || quality.checks.dimensions === "fail") {
       mkdirSync(quarantineDirPath, { recursive: true });
       const destination = join(quarantineDirPath, `${pad(frame.seed)}.png`);
-      writeFileSync(destination, frame.buffer);
+      writeFileSync(destination, rawBytes);
+      const reason = quality.flags.join(", ") || "unreadable image";
+      // Exactly one row for this attempt, and it carries the raw hash of the
+      // bytes that arrived with no normalized hash beside it, because no
+      // artifact was written for anyone to check one against.
       recordAttempt({
-        ...frame,
+        ...provenance,
         status: "failed",
+        raw,
         qc: quality,
-        quarantined: true,
-        quarantinePath: destination,
-        error: `qc: ${quality.flags.join(", ") || "unreadable image"}`,
+        error: `qc: ${reason}`,
+        quarantine: { path: destination, reason },
       });
-      throw new Error(`qc: ${quality.flags.join(", ") || "unreadable image"}`);
+      // A typed error, so the run's own catch can tell this from a call that
+      // failed and leave the row above as the one and only record of it.
+      throw new FrameQuarantined(frame.seed, destination, reason);
     }
 
     mkdirSync(join(root, "raw"), { recursive: true });
     // The bytes the vendor sent, written as they arrived. Both vendors sign their
     // images with C2PA content credentials, and re-encoding through sharp would
-    // strip that signature — Google documents any non-C2PA modification as
-    // tampering. The Frame below is still resized, because a Frame is a fixed
-    // size by definition and carries no such claim.
-    writeFileSync(rawFile(frame.seed), frame.buffer);
-    await sharp(frame.buffer).resize(768, 1152, { fit: "cover", position: "attention" }).png().toFile(frameFile(frame.seed));
-    recordAttempt({ ...frame, status: "ok", qc: quality });
+    // strip that signature. The Frame below is still resized, because a Frame is a
+    // fixed size by definition and carries no such claim.
+    writeFileSync(rawFile(frame.seed), rawBytes);
+    writeFileSync(frameFile(frame.seed), normalizedBytes as Buffer);
+    recordAttempt({ ...provenance, status: "ok", raw, normalized, qc: quality });
   };
 
   const importFrames = async (files: FileForImport[], seeds: number[]): Promise<ImportedFrame[]> => {
@@ -534,7 +658,19 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
         const ratio = (meta.width ?? 1) / (meta.height ?? 1);
         const warning = Math.abs(ratio / (2 / 3) - 1) > 0.06
           ? `${meta.width}x${meta.height} is not 2:3, so the crop cuts part of the image` : undefined;
-        await writeFrame({ seed, buffer: file.buffer, source: "manual", file: file.name, ts: new Date().toISOString() });
+        // The attributes come from a fresh sampling, taken now, describing an
+        // image that was made somewhere else. That is what `import` on the row
+        // says, and it is why the row records the sampler hash beside them.
+        await writeFrame({
+          seed,
+          buffer: file.buffer,
+          sample: sampleFor(seed),
+          source: "manual",
+          file: file.name,
+          attributesSource: "import",
+          params: null,
+          ts: new Date().toISOString(),
+        });
         results.push({ seed, file: file.name, ok: true, warning });
       } catch (err) {
         results.push({ seed, file: file.name, ok: false, error: err instanceof Error ? err.message : String(err) });
@@ -543,6 +679,13 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     return results;
   };
 
+  /**
+   * Removes a Frame so its Seed goes back to waiting, and records the decision.
+   *
+   * The decision is a row of its own, with `kind: "review"`, rather than another
+   * attempt: nothing was generated, so there is no outcome to record. The
+   * archive is append-only, so this is the only way to say it.
+   */
   const rejectFrame = (seed: number): void => {
     validateSeed(seed);
     const counter = readCounter();
@@ -552,17 +695,13 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     rmSync(rawFile(seed), { force: true });
     for (const file of existsSync(thumbDir) ? readdirSync(thumbDir) : [])
       if (file.startsWith(`${pad(seed)}-`)) rmSync(join(thumbDir, file), { force: true });
-    recordAttempt({ seed, status: "rejected" });
+    appendRow({ schema: SCHEMA, seed, kind: "review", review: "rejected", ts: new Date().toISOString() });
   };
 
-  const promptFor = (seed: number, useNegative = false): string => {
-    validateSeed(seed);
-    return composePrompt(template, negative, seed, salt, useNegative);
-  };
+  const promptFor = (seed: number, useNegative = false): string => sampleFor(seed, useNegative).prompt;
   const promptsFor = (seeds: number[], useNegative = false): PromptItem[] =>
     seeds.map((seed) => ({ seed, prompt: promptFor(seed, useNegative) }));
 
-  const supportedExtensions = (): string[] => [".png", ".jpg", ".jpeg", ".webp"];
   const quarantineDir = (): string => quarantineDirPath;
   const quarantinedFiles = (): string[] =>
     existsSync(quarantineDirPath) ? readdirSync(quarantineDirPath).sort() : [];
@@ -571,20 +710,29 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
       .map((name) => name.match(/^(\d{5})/)?.[1])
       .filter((match): match is string => !!match)
       .map(Number);
+
+  /**
+   * Puts bytes aside as a quarantine, for a Frame that was kept out of the
+   * archive by a decision rather than by what arrived. The row is the same one
+   * the ingestion path writes, with the raw hash of the bytes that were kept.
+   */
   const quarantineFrame = async (seed: number, buffer: Buffer, result?: QCResult): Promise<void> => {
     validateSeed(seed);
     const quality = result ?? await qc(buffer);
     mkdirSync(quarantineDirPath, { recursive: true });
-    writeFileSync(join(quarantineDirPath, `${pad(seed)}.png`), buffer);
+    const destination = join(quarantineDirPath, `${pad(seed)}.png`);
+    writeFileSync(destination, buffer);
+    const reason = quality.flags.join(", ") || "quarantined";
     recordAttempt({
       seed,
       status: "failed",
+      raw: { sha256: sha256(buffer), bytes: buffer.length, ...(await measure(buffer)) },
       qc: quality,
-      quarantined: true,
-      quarantinePath: join(quarantineDirPath, `${pad(seed)}.png`),
-      error: `qc: ${quality.flags.join(", ") || "quarantined"}`,
+      error: `qc: ${reason}`,
+      quarantine: { path: destination, reason },
     });
   };
+
   const qcFrame = async (seed: number): Promise<QCResult | undefined> => {
     validateSeed(seed);
     const file = frameFile(seed);
@@ -597,12 +745,10 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
   };
 
   return Object.freeze({
-    status, waitingSeeds, issueSeeds, claimSeeds, listFrames, hasFrame, readFrame,
-    readThumbnail, writeFrame, importFrames, rejectFrame, recordAttempt, promptFor, promptsFor,
+    status, waitingSeeds, issueSeeds, claimSeeds, listFrames, frameRecord, hasFrame, readFrame,
+    readThumbnail, writeFrame, importFrames, rejectFrame, recordAttempt,
+    sampleFor, promptFor, promptsFor,
     quarantineDir, quarantinedFiles, quarantinedSeeds, quarantineFrame, qcFrame,
-    supportedExtensions, extensions: supportedExtensions(),
     manifestRows: readManifest,
-    listAttempts: readManifest,
-    attempts: readManifest,
   });
 }

@@ -3,10 +3,12 @@
 // rather than restated; nothing in the core imports anything from this file, and
 // these are type-only imports, so the browser never pulls the module in and with
 // it the image library.
-import type { FrameRecord, ImportedFrame, PromptItem } from "../core/output-folder";
+import type { FrameRecord, ImportedFrame, PromptItem, SeedRecord } from "../core/output-folder";
 
 export type ImageItem = FrameRecord;
 export type ImportResult = ImportedFrame;
+/** What the detail route answers with: one Seed's full record, not a summary. */
+export type SeedRecordItem = SeedRecord;
 export type { PromptItem };
 
 /** One model a Provider offers, as the browser needs to draw it. */
