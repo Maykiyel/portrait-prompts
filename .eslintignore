@@ -1,0 +1,3 @@
+# Worktrees for implementer sub-agents. They are checkouts of this repository, so
+# linting them reports every file twice and adds no coverage the main tree lacks.
+.worktrees

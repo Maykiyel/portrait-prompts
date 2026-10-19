@@ -63,8 +63,11 @@ const whilePlanted = <T>(files: { path: string; contents: string }[], read: () =
 };
 
 export function runAudit(): void {
+  // `.worktrees` holds checkouts of this same repository, made for implementer
+  // sub-agents to work in. They are not source of ours: every module they contain is
+  // also in the tree above them, and auditing them would report each file twice.
   const notSource = (name: string) =>
-    name === "node_modules" || name === "dist" || name === "out" || name.startsWith("out-");
+    name === "node_modules" || name === "dist" || name === "out" || name === ".worktrees" || name.startsWith("out-");
   const sourceFiles = (dir = repoRoot, into: string[] = []): string[] => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
