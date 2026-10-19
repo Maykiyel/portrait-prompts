@@ -606,13 +606,18 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     // bytes it was cut from.
     const quality = await qc(rawBytes, normalizedBytes ? { normalized: normalizedBytes } : {});
 
-    // A Frame that cannot be read at all is quarantined with the bytes that
-    // arrived, rather than written into the archive.
-    if (quality.checks.decode === "fail" || quality.checks.dimensions === "fail") {
+    // Any check that fails sends the Frame to quarantine rather than the archive.
+    // That is the whole of the rule: a Frame whose status is `fail` is not a Frame
+    // this dataset keeps, whether it failed because the bytes would not decode,
+    // because they reported no dimensions, or because the picture is blank enough
+    // to carry no portrait. Naming two checks here instead of reading the status
+    // let a near-blank image through into the archive while its own record said
+    // `fail`, so the status is what decides.
+    if (quality.status === "fail") {
       mkdirSync(quarantineDirPath, { recursive: true });
       const destination = join(quarantineDirPath, `${pad(frame.seed)}.png`);
       writeFileSync(destination, rawBytes);
-      const reason = quality.flags.join(", ") || "unreadable image";
+      const reason = quality.flags.join(", ") || "failed the quality record";
       // Exactly one row for this attempt, and it carries the raw hash of the
       // bytes that arrived with no normalized hash beside it, because no
       // artifact was written for anyone to check one against.

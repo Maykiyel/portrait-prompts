@@ -19,8 +19,29 @@ export const check = (name: string, cond: boolean) => {
 // The three fake generators: one that always lands a Frame, one that fails the
 // way a quota error would, and one that refuses the Prompt the way a vendor's
 // moderation would. The third is what makes `blocked` observable at all.
+// A frame that passes every check. It carries real structure on purpose: a flat
+// fill has a luminance standard deviation of zero, which the `near_blank` check
+// reads as a fail, so a solid rectangle is not a healthy frame but an empty one.
 export const good = async () =>
-  sharp({ create: { width: 848, height: 1264, channels: 3, background: "#7a8fa6" } }).png().toBuffer();
+  sharp({
+    create: { width: 848, height: 1264, channels: 3, background: "#7a8fa6" },
+  })
+    .composite([{
+      input: Buffer.from(
+        '<svg width="848" height="1264">' +
+        '<rect width="848" height="1264" fill="#5c6f86"/>' +
+        '<circle cx="424" cy="470" r="230" fill="#c98d6a"/>' +
+        '<rect x="150" y="820" width="548" height="440" fill="#31404f"/>' +
+        '<rect x="330" y="380" width="70" height="34" fill="#20242c"/>' +
+        '<rect x="450" y="380" width="70" height="34" fill="#20242c"/>' +
+        '<rect x="360" y="560" width="130" height="18" fill="#7d4a3c"/>' +
+        '</svg>',
+      ),
+      top: 0,
+      left: 0,
+    }])
+    .png()
+    .toBuffer();
 export const bad = async () => {
   throw new Error("fake quota error");
 };

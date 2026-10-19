@@ -95,7 +95,24 @@ export async function runCliContract(): Promise<void> {
   mkdirSync(impIn);
   for (const [i, [name, w, h]] of ([["oldest.png", 900, 1350], ["square.png", 1024, 1024]] as [string, number, number][]).entries()) {
     const p = join(impIn, name);
-    await sharp({ create: { width: w, height: h, channels: 3, background: "#a67a7a" } }).png().toFile(p);
+    // Each image carries structure, because a flat fill reads as near_blank and a
+    // frame that fails is quarantined rather than imported.
+    await sharp({ create: { width: w, height: h, channels: 3, background: "#a67a7a" } })
+      .composite([{
+        input: Buffer.from(
+          `<svg width="${w}" height="${h}">` +
+          `<rect width="${w}" height="${h}" fill="#8d6464"/>` +
+          `<circle cx="${w / 2}" cy="${h * 0.4}" r="${Math.round(Math.min(w, h) * 0.26)}" fill="#d9b394"/>` +
+          `<rect x="${Math.round(w * 0.18)}" y="${Math.round(h * 0.68)}" width="${Math.round(w * 0.64)}" height="${Math.round(h * 0.32)}" fill="#4a3b3b"/>` +
+          `<rect x="${Math.round(w * 0.39)}" y="${Math.round(h * 0.33)}" width="${Math.round(w * 0.08)}" height="${Math.round(h * 0.03)}" fill="#241d1d"/>` +
+          `<rect x="${Math.round(w * 0.54)}" y="${Math.round(h * 0.33)}" width="${Math.round(w * 0.08)}" height="${Math.round(h * 0.03)}" fill="#241d1d"/>` +
+          `</svg>`,
+        ),
+        top: 0,
+        left: 0,
+      }])
+      .png()
+      .toFile(p);
     utimesSync(p, new Date(2026, 0, 1, 0, i), new Date(2026, 0, 1, 0, i)); // oldest.png is the older download
   }
   const impFolder = openOutputFolder(impOut, "");

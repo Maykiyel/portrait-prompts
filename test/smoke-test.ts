@@ -212,7 +212,27 @@ manual.claimSeeds(3); // what the prompts command does
 mkdirSync(inDir);
 for (const [i, name] of ["b.png", "a.png"].entries()) {
   const p = `${inDir}/${name}`;
-  await sharp({ create: { width: 1024, height: 1024, channels: 3, background: "#a67a7a" } }).png().toFile(p);
+  // Square on purpose, so the crop warning has something real to report. It still
+  // carries structure, because a flat fill fails the near_blank check and a frame
+  // that fails is quarantined rather than imported.
+  await sharp({
+    create: { width: 1024, height: 1024, channels: 3, background: "#a67a7a" },
+  })
+    .composite([{
+      input: Buffer.from(
+        '<svg width="1024" height="1024">' +
+        '<rect width="1024" height="1024" fill="#8d6464"/>' +
+        '<circle cx="512" cy="400" r="260" fill="#d9b394"/>' +
+        '<rect x="180" y="700" width="664" height="324" fill="#4a3b3b"/>' +
+        '<rect x="400" y="330" width="80" height="38" fill="#241d1d"/>' +
+        '<rect x="556" y="330" width="80" height="38" fill="#241d1d"/>' +
+        '</svg>',
+      ),
+      top: 0,
+      left: 0,
+    }])
+    .png()
+    .toFile(p);
   utimesSync(p, new Date(2026, 0, 1, 0, i), new Date(2026, 0, 1, 0, i)); // b is oldest
 }
 await importImages({ inDir, outDir: out2, dryRun: false, salt: "" });
