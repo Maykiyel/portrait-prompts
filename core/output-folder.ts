@@ -9,7 +9,8 @@ import { qc, type QCResult, type QcFlag, type QcStatus } from "./qc";
 import { readRow, sampledPortrait } from "./manifest-reader";
 import type {
   AttributesSource, DuplicateRecord, FrameSource, GenerationParams, GenerationStatus,
-  ImageDigest, IngestQuarantine, ManifestRow, NormalizedDigest, SampledPortrait, SchemaVersion,
+  ImageDigest, IngestQuarantine, ManifestRow, NormalizedDigest, ReviewState, SampledPortrait,
+  SchemaVersion, SeedState,
 } from "./manifest-types";
 
 // The row shape is stated in the types module and the reading of it in the reader,
@@ -19,8 +20,8 @@ import type {
 export { FrameQuarantined };
 export type {
   AttributesSource, DuplicateRecord, FrameSource, GenerationParams, GenerationRow, GenerationStatus,
-  ImageDigest, IngestQuarantine, ManifestRow, NormalizedDigest, ReviewReason, ReviewRow,
-  SampledPortrait, SchemaVersion, SkinEyeBands,
+  ImageDigest, IngestQuarantine, ManifestRow, NormalizedDigest, ReviewReason, ReviewRow, ReviewState,
+  SampledPortrait, SchemaVersion, SeedState, SkinEyeBands,
 } from "./manifest-types";
 
 /** The schema version stamped on every row this work writes. */
@@ -74,6 +75,12 @@ export type FrameRecord = {
   /** The roll-up the stored QC record reached. Absent when no QC record was stored. */
   qcStatus?: QcStatus;
   flags?: QcFlag[];
+  /**
+   * What a person decided about this Frame, read from the review row and from
+   * that row alone. It is here because a Gallery tile draws it, and it is the
+   * one field on a tile a generation attempt can never set.
+   */
+  reviewState: ReviewState;
 };
 
 export type PromptItem = { seed: number; prompt: string };
@@ -91,6 +98,15 @@ export type SeedRecord = {
   frame: ManifestRow;
   /** The latest review decision for this Seed, when one has been made. */
   review?: ManifestRow;
+  /**
+   * What the two rows above add up to, which is not itself a row.
+   *
+   * It sits beside them rather than inside them because each of its three
+   * fields is read from a different place, and folding them into a stored row
+   * would describe an attempt, a set of checks and a decision as though one
+   * event had recorded all three.
+   */
+  state: SeedState;
 };
 
 /**
@@ -308,11 +324,18 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
         .filter((row): row is ManifestRow => row !== undefined)
       : [];
 
-  /** What each Seed's rows add up to: its latest generation attempt and its latest review decision. */
-  type SeedState = { generation?: ManifestRow; review?: ManifestRow };
+  /**
+   * The rows each Seed has, split by what they are about.
+   *
+   * A generation row records an attempt to make a Frame and a review row
+   * records what a person decided about one, so they are kept in separate slots
+   * rather than in one "latest row". A slot only ever holds the latest of its
+   * own kind, and a row that is neither kind fills neither.
+   */
+  type SeedRows = { generation?: ManifestRow; review?: ManifestRow };
 
-  const latestBySeed = (): Map<number, SeedState> => {
-    const latest = new Map<number, SeedState>();
+  const latestBySeed = (): Map<number, SeedRows> => {
+    const latest = new Map<number, SeedRows>();
     for (const row of readManifest()) {
       const state = latest.get(row.seed) ?? {};
       if (row.review !== undefined) state.review = row;
@@ -323,31 +346,64 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
   };
 
   /**
-   * What each Seed's last generation attempt came to, once review has had its say.
+   * The three states of one Seed, each read from the row that answers it.
    *
-   * A review row is never an outcome of its own: it is a decision about a Frame,
-   * not an attempt to make one. It does clear the outcome, because a rejected
-   * Frame puts its Seed back to waiting and a waiting Seed is not a failed one.
-   * That is what the Manifest always did, where the rejection was itself a row
-   * carrying a status, and keeping it is what makes the failed count say which
-   * Seeds a later run will actually try.
+   * The generation status and the quality status come off the same generation
+   * row, because they describe the same attempt: taking one from an older row
+   * and the other from a newer one would pair an outcome with checks that were
+   * never run beside it. The review state comes off the review row and nowhere
+   * else, because a decision about a Frame is not an attempt to make one and
+   * says nothing about how any attempt came out.
+   *
+   * A Seed with no row to answer a question is absent that answer. Nothing here
+   * is defaulted, and nothing is invented, so a Seed whose archive never
+   * recorded a quality check has no quality status rather than a standing one.
+   * The review state is the exception, because "no person has looked at this"
+   * is a fact about the Seed rather than a gap in what is known.
+   */
+  const seedState = (rows: SeedRows | undefined): SeedState => ({
+    ...(rows?.generation?.status === undefined ? {} : { generationStatus: rows.generation.status }),
+    ...(rows?.generation?.qc?.status === undefined ? {} : { qcStatus: rows.generation.qc.status }),
+    reviewState: rows?.review?.review ?? "unreviewed",
+  });
+
+  /**
+   * What each Seed's last generation attempt came to, ignoring review rows.
+   *
+   * A review row is never an outcome of its own: it is a decision about a
+   * Frame, not an attempt to make one, so it is not read for this at all. That
+   * is what makes the failed count answer the question it is asked. A Seed
+   * whose Frame was turned down and whose regeneration then failed is a Seed
+   * whose last attempt failed, whatever a person said about the Frame before it.
+   *
+   * This is also why the failed count and the waiting set are allowed to
+   * disagree, which they now can and could not before. `waitingSeeds` asks
+   * whether a Frame file is in the folder, and the file is gone once a Frame is
+   * rejected, so a rejected Seed is waiting whichever way its last attempt came
+   * out. The failed count asks what that last attempt came to, and that is a
+   * question about an attempt rather than about the folder. The old rule closed
+   * the gap by dropping a rejected Seed's outcome entirely, which made the two
+   * numbers agree by also losing a real failure from the count. They are
+   * separate questions with separate answers now, and a Seed that is failed and
+   * waiting at once is reporting both of them truthfully.
    */
   const latestOutcomes = (): Map<number, GenerationStatus> => {
     const outcomes = new Map<number, GenerationStatus>();
-    for (const [seed, state] of latestBySeed()) {
-      if (state.review?.review === "rejected" || state.generation?.status === undefined) outcomes.delete(seed);
-      else outcomes.set(seed, state.generation.status);
-    }
+    for (const [seed, rows] of latestBySeed())
+      if (rows.generation?.status !== undefined) outcomes.set(seed, rows.generation.status);
     return outcomes;
   };
 
-  /** The row a Frame on disk is described by, when it has one that still stands. */
-  const frameRowFor = (latest: Map<number, SeedState>, seed: number): ManifestRow | undefined => {
-    const state = latest.get(seed);
-    return state && state.review?.review !== "rejected" && state.generation?.status === "ok"
-      ? state.generation
-      : undefined;
-  };
+  /**
+   * The row a Frame on disk is described by, when it has one that still stands.
+   *
+   * A Frame exists because a generation attempt wrote it, so the row that
+   * describes it is the latest attempt that succeeded. A review row is not
+   * consulted: whether a person has turned a Frame down since does not change
+   * which attempt produced the bytes in the folder.
+   */
+  const frameRowFor = (rows: SeedRows | undefined): ManifestRow | undefined =>
+    rows?.generation?.status === "ok" ? rows.generation : undefined;
 
   const waitingSeeds = (): number[] => {
     const counter = readCounter();
@@ -417,11 +473,21 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
    * Read off disk rather than off the Manifest, because the file is the fact: a
    * Seed with a Frame is in the Gallery whether or not a row survives, and a row
    * that survives for a Seed whose Frame was deleted describes nothing.
+   *
+   * Each tile is built on the same derivation the rest of the folder uses, so
+   * the three states of a Seed cannot read differently in the Gallery than they
+   * do anywhere else. What a person decided is the one field taken from the
+   * review row. The quality record is taken from the row that still describes
+   * the file on disk, which is the latest attempt that succeeded, so a Frame
+   * whose Seed has since been retried keeps being described by the attempt that
+   * wrote it. A review row never stands in for either of those, because a
+   * decision about a Frame says nothing about how any attempt came out.
    */
   const listFrames = (): FrameRecord[] => {
     const latest = latestBySeed();
     return frameSeeds().map((seed) => {
-      const row = frameRowFor(latest, seed);
+      const rows = latest.get(seed);
+      const row = frameRowFor(rows);
       return {
         seed,
         version: row?.version ?? "unknown",
@@ -436,6 +502,7 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
         ...(row?.primaryGroup === undefined ? {} : { primaryGroup: row.primaryGroup }),
         ...(row?.photographyProfile === undefined ? {} : { photographyProfile: row.photographyProfile }),
         ...(row?.qc === undefined ? {} : { qcStatus: row.qc.status, flags: row.qc.flags }),
+        reviewState: seedState(rows).reviewState,
       };
     });
   };
@@ -443,16 +510,22 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
   /**
    * One Seed's full record, for the detail view.
    *
-   * The grid gets a summary per Frame and this gets the row as stored, which is
-   * the only place the digests, the sampled attributes and the QC record are
-   * read. Nothing about it is derived here: a field the row does not carry is
-   * not on the answer.
+   * The grid gets a summary per Frame and this gets the rows as stored, which
+   * is the only place the digests, the sampled attributes and the QC record are
+   * read. Nothing about the rows is derived here: a field the row does not
+   * carry is not on the answer. What is derived is added beside them, under
+   * `state`, so the three answers are each traceable to the row they came from.
    */
   const frameRecord = (seed: number): SeedRecord | undefined => {
     validateSeed(seed);
-    const state = latestBySeed().get(seed);
-    if (!state?.generation) return undefined;
-    return { seed, frame: state.generation, ...(state.review === undefined ? {} : { review: state.review }) };
+    const rows = latestBySeed().get(seed);
+    if (!rows?.generation) return undefined;
+    return {
+      seed,
+      frame: rows.generation,
+      ...(rows.review === undefined ? {} : { review: rows.review }),
+      state: seedState(rows),
+    };
   };
 
   const readFrame = (seed: number, raw = false): ReadStream => {

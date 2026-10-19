@@ -44,6 +44,42 @@ export type GenerationStatus = "ok" | "failed" | "blocked";
 /** What a person decided about a finished Frame. */
 export type ReviewDecision = "accepted" | "rejected";
 
+/**
+ * What is known about a Seed's review.
+ *
+ * `unreviewed` is not a fourth decision. It is the state a Seed is in when no
+ * review row names it, which is a recorded fact about the archive rather than a
+ * gap in it, so it is spelled out rather than left absent. A decision and the
+ * absence of one are the same field with different values, and the field never
+ * goes missing.
+ */
+export type ReviewState = "unreviewed" | ReviewDecision;
+
+/**
+ * The three states of one Seed, each read from its own row and from no other.
+ *
+ * They are kept apart because they answer three different questions. How the
+ * last attempt to make a Frame came to is a fact about an attempt. What its
+ * quality checks said is a fact about the bytes that attempt produced. What a
+ * person decided about the Frame afterwards is a fact about a person. A review
+ * row records the third and is therefore never read for the first, and the
+ * first two are read from the same row because they describe the same attempt:
+ * a Seed is never described by one attempt's outcome beside another's checks.
+ *
+ * The first two are absent when the row that would carry them does not. That is
+ * how this archive says it does not know, and it is why nothing here is ever
+ * filled with a placeholder string. The third is never absent, because a Seed
+ * no person has looked at is `unreviewed` rather than unknown.
+ */
+export type SeedState = {
+  /** The outcome of the latest generation or import row for this Seed. */
+  generationStatus?: GenerationStatus;
+  /** The roll-up that same row's QC record reached. */
+  qcStatus?: QcStatus;
+  /** What a person last decided about this Seed's Frame. */
+  reviewState: ReviewState;
+};
+
 /** Why a Frame was rejected. Absent when nobody said, which is what a legacy row is. */
 export type ReviewReason =
   | "attribute_mismatch"

@@ -29,6 +29,7 @@ import { createStore } from "../server/store";
 import { runAudit } from "./smoke-audit";
 import { runCliContract } from "./smoke-cli";
 import { runManifestChecks } from "./smoke-manifest";
+import { runStateChecks } from "./smoke-state";
 import "./smoke-classifiers";
 import {
   asyncCode, bad, captureOutput, check, errorCode, good, jobOf, promptFiles, refused, repoRoot, results, withGenerators,
@@ -53,6 +54,12 @@ runAudit();
 // rows through the real paths and read them back off disk, so they own
 // fixtures and clean them up, which is more than the rest of this file does.
 await runManifestChecks();
+
+// The three states of a Seed, in their own file for the same reason: they are
+// derived from the Manifest rather than asked of the folder, and they change
+// for their own reason. They write review rows and refuse bytes, so they own
+// their fixtures and clean them up.
+await runStateChecks();
 
 // The five-digit Seed label is stated twice: the module owns it for
 // filenames and the command line, and the browser states it for display,

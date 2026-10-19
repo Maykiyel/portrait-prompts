@@ -400,9 +400,12 @@ export async function runManifestChecks(): Promise<void> {
     const galleryApp = createApp({ outDir: galleryDir, salt: SALT }, withGenerators({ gemini: good }));
     const listed = (await (await galleryApp.request("/api/images")).json()) as Record<string, unknown>[];
     // The whole of the summary a FrameRecord is allowed to be, and nothing else.
+    // The review state is one of them, so a tile can say what a person decided
+    // without the record behind that decision. test/smoke-state.ts is where the
+    // field's derivation is proved; this holds the payload to it.
     const GRID_KEYS = [
       "seed", "version", "source", "provider", "model", "prompt", "updatedAt",
-      "primaryGroup", "photographyProfile", "qcStatus", "flags",
+      "primaryGroup", "photographyProfile", "qcStatus", "flags", "reviewState",
     ];
     // The rows behind those fifty Frames all carry a QC record, with its checks
     // and its flags, which is what makes the payload check something.
@@ -414,6 +417,9 @@ export async function runManifestChecks(): Promise<void> {
         !JSON.stringify(listed).includes('"checks"') &&
         !JSON.stringify(listed).includes('"perceptual"') &&
         listed.every((one) => typeof one.qcStatus === "string" && Array.isArray(one.flags)) &&
+        // Every tile says where it stands with a person as well, and none of
+        // these fifty Frames was ever looked at.
+        listed.every((one) => one.reviewState === "unreviewed") &&
         // Every tile still says something: the Seed, the Prompt and where it
         // came from are all there, so nothing was dropped to make the payload small.
         listed.every((one) => typeof one.seed === "number" && typeof one.prompt === "string" &&
