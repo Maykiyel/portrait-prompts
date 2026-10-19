@@ -83,6 +83,7 @@ export const pools: Record<string, string[]> = {
     "a high ponytail of black hair", "thinning gray hair combed back", "dark hair in twists",
     "a faded undercut with black hair on top", "wispy white hair",
   ],
+  // Used for men only. Empty entries keep about half of them clean-shaven.
   facialHair: [
     ", a trimmed beard", ", a light stubble", ", a gray mustache", ", a full dark beard",
     ", a salt-and-pepper goatee", ", a thin mustache", ", a short boxed beard",
@@ -135,6 +136,10 @@ export const pools: Record<string, string[]> = {
   ],
 };
 
+/**
+ * Optional details. Each portrait draws zero to three of these categories and at most one
+ * entry per category. They are not placeholders. They fill {features} together.
+ */
 export const detailPools: Record<string, string[]> = {
   skinDetail: [
     "light freckles across the nose", "freckles across the cheeks", "subtle acne marks", "faint sun spots",
@@ -152,8 +157,10 @@ export const detailPools: Record<string, string[]> = {
   ageDetail: ["faint crow's feet", "fine forehead lines", "visible laugh lines", "fine lines around the mouth"],
 };
 
+/** Placeholders the template may use that come from the sampler rather than from a pool. */
 export const derivedPlaceholders = ["features"] as const;
 export const MAX_DETAILS = 3;
+/** Share of portraits that get two ethnicities, as in "Filipino and Brazilian". */
 export const MIX_RATE = 0.25;
 export const NO_DETAILS = "no prominent additional marks or accessories";
 const MIN_AGE_FOR_AGE_DETAIL = 30;
@@ -165,7 +172,6 @@ export const GENDER_WEIGHTS: Record<string, number> = {
   woman: 48,
   "person with an androgynous look": 4,
 };
-export const genderWeights = GENDER_WEIGHTS;
 
 // Ethnicity groups and weights.
 export const ethnicityGroups: Record<string, string[]> = {
@@ -182,7 +188,6 @@ export const ethnicityGroups: Record<string, string[]> = {
   indigenous_americas: ["Navajo", "Quechua", "Cree"],
 };
 export const GROUP_WEIGHTS: Record<string, number> = Object.fromEntries(Object.keys(ethnicityGroups).map((g) => [g, 1]));
-export const groupWeights = GROUP_WEIGHTS;
 
 export function groupOf(ethnicity: string): string {
   for (const [group, list] of Object.entries(ethnicityGroups)) if (list.includes(ethnicity)) return group;
@@ -207,7 +212,6 @@ export const SKIN_BANDS: Record<string, string> = {
   "fair freckled": "very_light",
   "pale": "very_light",
 };
-export const skinBands = SKIN_BANDS;
 
 export const EYE_BANDS: Record<string, string> = {
   "very dark brown": "dark",
@@ -223,7 +227,6 @@ export const EYE_BANDS: Record<string, string> = {
   "gray-green": "light",
   "light blue": "light",
 };
-export const eyeBands = EYE_BANDS;
 
 export function skinBandOf(entry: string): string {
   const band = SKIN_BANDS[entry];
@@ -250,7 +253,6 @@ export const SKIN_BAND_WEIGHTS: Record<string, Record<string, number>> = {
   pacific: { deep: 5, medium_dark: 42, medium: 38, light: 14, very_light: 1 },
   indigenous_americas: { deep: 2, medium_dark: 40, medium: 43, light: 14, very_light: 1 },
 };
-export const skinBandWeights = SKIN_BAND_WEIGHTS;
 
 export const EYE_BAND_WEIGHTS: Record<string, Record<string, number>> = {
   europe: { dark: 20, brown: 25, hazel_amber: 15, light: 40 },
@@ -265,7 +267,6 @@ export const EYE_BAND_WEIGHTS: Record<string, Record<string, number>> = {
   pacific: { dark: 60, brown: 35, hazel_amber: 4, light: 1 },
   indigenous_americas: { dark: 70, brown: 27, hazel_amber: 2, light: 1 },
 };
-export const eyeBandWeights = EYE_BAND_WEIGHTS;
 
 // Age rules.
 export const AGE_RULES: { pool: string; entry: string; minAge?: number; maxAge?: number }[] = [
@@ -291,7 +292,6 @@ export const AGE_RULES: { pool: string; entry: string; minAge?: number; maxAge?:
   { pool: "profession", entry: "a retired pilot", minAge: 60 },
   { pool: "profession", entry: "a bike messenger", maxAge: 50 },
 ];
-export const ageRules = AGE_RULES;
 
 export const GRAY_HAIR: string[] = [
   "short wavy salt-and-pepper hair",
@@ -326,7 +326,6 @@ export const BACKGROUND_SETTINGS: Record<string, string> = {
   "a construction site fence": "outdoor",
   "a plain gray studio backdrop": "studio",
 };
-export const backgroundSettings = BACKGROUND_SETTINGS;
 
 export const LIGHTING_ALLOWED_SETTINGS: Record<string, string[]> = {
   "soft window light from the left": ["indoor"],
@@ -342,7 +341,6 @@ export const LIGHTING_ALLOWED_SETTINGS: Record<string, string[]> = {
   "bright even studio light": ["indoor", "studio"],
   "gentle overhead light": ["indoor", "studio"],
 };
-export const lightingAllowedSettings = LIGHTING_ALLOWED_SETTINGS;
 
 export const BACKGROUND_LIGHTING_EXCLUSIONS: Record<string, string[]> = {
   "a rainy street at dusk": ["harsh midday sun with soft fill", "warm golden hour backlight"],
@@ -351,7 +349,6 @@ export const BACKGROUND_LIGHTING_EXCLUSIONS: Record<string, string[]> = {
   "a sunlit kitchen": ["moody single-source key light", "warm tungsten lamp light"],
   "a cafe with warm lights": ["bright even studio light"],
 };
-export const backgroundLightingExclusions = BACKGROUND_LIGHTING_EXCLUSIONS;
 
 // Light or red natural hair entries and group factors.
 export const LIGHT_NATURAL_HAIR_ENTRIES: string[] = [
@@ -360,7 +357,6 @@ export const LIGHT_NATURAL_HAIR_ENTRIES: string[] = [
   "red curly hair",
   "a short pixie cut in platinum blond",
 ];
-export const lightNaturalHairEntries = LIGHT_NATURAL_HAIR_ENTRIES;
 
 export const LIGHT_NATURAL_HAIR_FACTORS: Record<string, number> = {
   europe: 1,
@@ -375,7 +371,6 @@ export const LIGHT_NATURAL_HAIR_FACTORS: Record<string, number> = {
   sub_saharan_africa: 0.15,
   indigenous_americas: 0.15,
 };
-export const lightNaturalHairFactors = LIGHT_NATURAL_HAIR_FACTORS;
 
 // Photography profiles.
 export type PhotographyProfile = {
@@ -434,12 +429,8 @@ export const PHOTOGRAPHY_PROFILES: Record<string, PhotographyProfile> = {
     excludedLighting: ["harsh midday sun with soft fill", "bright even studio light", "warm golden hour backlight"],
   },
 };
-export const photographyProfiles = PHOTOGRAPHY_PROFILES;
 
 pools.photography = Object.keys(PHOTOGRAPHY_PROFILES);
-
-// Backward-friendly aliases.
-export const photographyProfilesList = Object.values(PHOTOGRAPHY_PROFILES);
 
 // Weighted picker.
 export function weightedPick<T>(r: () => number, xs: T[], weight: (x: T) => number): T {
@@ -455,7 +446,6 @@ export function weightedPick<T>(r: () => number, xs: T[], weight: (x: T) => numb
   }
   return xs[xs.length - 1];
 }
-export const weightedPicker = weightedPick;
 
 // Skin detail weights.
 const SKIN_DETAIL_WEIGHTS: Record<string, Record<string, number>> = {
@@ -464,8 +454,6 @@ const SKIN_DETAIL_WEIGHTS: Record<string, Record<string, number>> = {
   "faint sun spots": { deep: 0.2, medium_dark: 0.4 },
   "faint redness across the cheeks": { deep: 0.3 },
 };
-export const SKIN_DETAIL_WEIGHTS_EXPORT = SKIN_DETAIL_WEIGHTS;
-export const skinDetailWeights = SKIN_DETAIL_WEIGHTS;
 
 function skinDetailWeight(entry: string, band: string): number {
   const w = SKIN_DETAIL_WEIGHTS[entry];
@@ -476,6 +464,7 @@ function skinDetailWeight(entry: string, band: string): number {
 }
 
 
+/** Reads as plain English: "a", "a and b", "a, b, and c". An empty list gives the fallback. */
 export function formatDetails(details: string[]): string {
   if (details.length === 0) return NO_DETAILS;
   if (details.length === 1) return details[0];
@@ -483,6 +472,7 @@ export function formatDetails(details: string[]): string {
   return `${details.slice(0, -1).join(", ")}, and ${details[details.length - 1]}`;
 }
 
+/** Keeps a detail from contradicting or repeating what the base pools already chose. */
 function fits(category: string, detail: string, v: Record<string, string>): boolean {
   const age = Number(v.age);
   if (category === "ageDetail" && age < MIN_AGE_FOR_AGE_DETAIL) return false;
@@ -496,11 +486,13 @@ function pickDetails(r: () => number, v: Record<string, string>): { category: st
   const count = Math.floor(r() * (MAX_DETAILS + 1));
   const skinBand = skinBandOf(v.skin);
   const open = Object.keys(detailPools).filter((k) => detailPools[k].some((d) => fits(k, d, v)));
+  // Partial Fisher-Yates over the categories: no category is chosen twice.
   for (let i = 0; i < Math.min(count, open.length); i++) {
     const j = i + Math.floor(r() * (open.length - i));
     [open[i], open[j]] = [open[j], open[i]];
   }
   const chosen = new Set(open.slice(0, Math.min(count, open.length)));
+  // Pool order, not draw order, so the sentence reads the same way for every seed.
   return Object.keys(detailPools)
     .filter((k) => chosen.has(k))
     .map((k) => {
@@ -510,6 +502,10 @@ function pickDetails(r: () => number, v: Record<string, string>): { category: st
     });
 }
 
+/**
+ * Everything one seed, salt and random source decide: the filled placeholders, the optional
+ * details behind {features}, and the groups, bands and photography profile that go with them.
+ */
 export function samplePortrait(seed: number, salt: string, r: () => number = rngFor(seed, salt)) {
   const values: Record<string, string> = {};
   let groups: string[] = [];
