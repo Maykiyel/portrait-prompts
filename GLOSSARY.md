@@ -30,8 +30,20 @@ _Avoid_: pending, missing, unfulfilled
 One try at producing a Frame for a Seed, whether it succeeded or failed.
 
 **Manifest**:
-The append-only record of every Attempt: which Seed, which Prompt version, which salt, which Provider or route, the Prompt text, and how it ended.
+The append-only record of every Attempt: which Seed, which Prompt version, which salt, which Provider or route, the Prompt text, the sampled Portrait, both hashes, the quality record, and how it ended. Every row written today carries `schema: 2`. A row is appended and never rewritten, so it keeps saying what was true when it was written.
 _Avoid_: log, history, ledger
+
+**Absent key and null**:
+The two ways a Manifest row can be missing something. An absent key means unknown: nobody recorded it. `null` means recorded as not applicable, which is what a Provider is on a row a person imported by hand. The string `"unknown"` is never written.
+_Avoid_: empty string, unknown, n/a
+
+**Legacy row**:
+A Manifest row written before `schema: 2`, carrying only what the writer of that day could write. A field it did not record stays absent, so a legacy row reads with almost everything missing rather than with invented values, and it is never given the attributes today's sampler would draw. A legacy rejection reads as a Rejection with no reason and no quarantine path, because none was recorded.
+_Avoid_: old row, backfilled row, unlabelled row
+
+**Interim row**:
+A Manifest row written by the unfinished v6 build, which recorded the same facts under several names at once and has no `schema`. Its `rawHash` is read as the Raw hash, because that one was right. Its other hash fields are ignored, because they were computed from a different crop and do not describe the stored bytes, and no normalized hash is ever reconstructed for it. Its quality record is left absent rather than translated, because it was recorded in another shape and relabelling it would claim a check nobody ran.
+_Avoid_: v6 row, half-written row
 
 **Rejection**:
 The decision to discard a Frame and return its Seed to waiting. The Manifest keeps the record that it happened.
@@ -55,12 +67,32 @@ _Avoid_: original, source file
 A small cached copy of a Frame, used by the Gallery. Safe to delete; it is rebuilt on demand.
 _Avoid_: preview, thumb, resize
 
+**Quality check**:
+One measurement about a Frame's pixels. The checks are `decode`, `dimensions`, `blank`, `luminance`, `aspect`, `duplicate_exact`, `duplicate_perceptual` and `face_presence`. Each is recorded as `pass`, `warn`, `fail` or `not_run`, and every Frame records every check, including the ones that did not run.
+_Avoid_: test, validation, detector
+
+**Quality status**:
+The roll-up of a Frame's checks: `fail` if any check failed, otherwise `warn` if any warned, otherwise `pass`, and `not_run` only when every check is `not_run`. A check that did not run never pulls the status down.
+_Avoid_: verdict, grade, score
+
 **Quality flag**:
-A label a Quality check attaches to a Frame, such as `near_blank`, `extreme_luminance_low`, `material_crop`, `aspect_ratio_mismatch`, `duplicate_exact`, `duplicate_perceptual`, or `face_detector_not_run`. Flags describe a possible problem; they do not by themselves remove a Frame.
+A label a Quality check attaches to a Frame, such as `near_blank`, `extreme_luminance_low` or `aspect_ratio_mismatch`. The whole list is `decode_failed`, `zero_dimensions`, `near_blank`, `extreme_luminance_low`, `extreme_luminance_high`, `aspect_ratio_mismatch`, `duplicate_exact`, `duplicate_perceptual` and `duplicate_check_incomplete`. A flag is written only when its check reached the matching state. Flags describe a possible problem; they do not by themselves remove a Frame.
 _Avoid_: defect, issue
 
+**Not run**:
+The state of a Quality check that did not happen. It is not a pass. No face detector runs here, so `face_presence` is `not_run` on every Frame, and duplicate detection is not built yet, so `duplicate_exact` and `duplicate_perceptual` are `not_run` on every Frame too.
+_Avoid_: skipped, skipped as fine, silently passed
+
+**Raw hash**:
+The sha256 of the bytes as they arrived, from a Provider or from an import file, hashed before anything touched them. A statement about what came back and nothing else.
+_Avoid_: source hash, original hash
+
+**Normalized hash**:
+The sha256 of the exact bytes written to the Frame file. The artifact is built once, hashed, and then written from that same buffer, so the hash always matches the file on disk. A Frame refused at ingestion has a Raw hash and no normalized hash, because no artifact was written.
+_Avoid_: frame hash, thumb hash, resized hash
+
 **Quarantine**:
-The place unaccepted Frame bytes are kept, under `out/quarantine/`. A Frame that fails decoding or a quality check is quarantined instead of written into the archive, and its Manifest row marks it as failed and quarantined, with its quarantine path.
+The place unaccepted Frame bytes are kept, under `out/quarantine/`. A Frame whose bytes will not decode, or that reports zero dimensions, is quarantined instead of written into the archive, and its Manifest row marks it as failed and quarantined, with its quarantine path. A Rejection is a decision and is not the same thing.
 _Avoid_: rejected, discarded
 
 ### Prompts
@@ -85,9 +117,21 @@ _Avoid_: options, choices, variants, list
 One of eleven named groups of ethnicities, such as `europe` or `sub_saharan_africa`. A Portrait's ethnicity is chosen by picking a group with equal weight, then picking an ethnicity inside it, so small groups are not drowned out by large ones. Mixed portraits can carry two groups.
 _Avoid_: ethnicity family, region
 
+**Primary group**:
+The ethnicity group the first ethnicity draw chose. Recorded on its own in `primaryGroup`, separately from `groups`, because a mixed Portrait may name its second ethnicity first and the draw still began from one group. It is not the first group named in the Prompt.
+_Avoid_: main group, first group, dominant group
+
 **Tone band**:
 A coarsened value for a visual trait. Skin tone bands are deep, medium_dark, medium, light, and very_light. Eye tone bands are dark, brown, hazel_amber, and light. Groups carry band weights, and mixed portraits average those weights across both groups.
 _Avoid_: skin tone, color band
+
+**Template hash**:
+The first 12 hex characters of the sha256 of the Prompt template's text. Recorded beside each Frame, so a reader can tell which template built it without having to trust the version tag.
+_Avoid_: prompt hash, template id
+
+**Sampler hash**:
+The first 12 hex characters of the sha256 of the sampler's definition tables, serialized canonically with sorted keys. Recorded beside each Frame, so a reader can tell which pools built it. It moves when a table or a constant changes, not when the random draw differs.
+_Avoid_: pool hash, seed hash
 
 **Photography profile**:
 One of six profiles in the photography pool, such as `professional_headshot` or `low_light_portrait`. It controls allowed background settings and lighting, and its description fills the `{photography}` placeholder.

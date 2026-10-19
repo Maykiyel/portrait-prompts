@@ -94,13 +94,45 @@ Every prompt comes from a seed. A counter in `out/cursor.json` hands seeds out i
 
 - `out/00001.png` is the final 768x1152 image. Images are cropped to fit, centered on the most detailed area.
 - `out/raw/00001.png` is the untouched original.
-- `out/manifest.jsonl` has one line per attempt. Each row records seed, prompt version, salt, provider, model or source, prompt text, status, timestamp, QC result, hashes, dimensions, flags, QC version, and quarantine fields when applicable. Rows may carry legacy or missing fields from older runs, because the Manifest is append-only.
 - `out/cursor.json` holds the seed counter and the salt it was started with.
 - `out/thumbs/` holds gallery thumbnails. It is safe to delete.
-- `out/quarantine/` holds Frames that failed the quality check during import or generation, kept with their original bytes.
-- Every accepted Frame is checked with `core/qc.ts`. QC flags include decode_failed, zero_dimensions, near_blank, extreme_luminance_low, extreme_luminance_high, material_crop, aspect_ratio_mismatch, duplicate_exact, duplicate_perceptual and face_detector_not_run. A face detector is not installed, so `face_detector_not_run` is expected on every Frame.
-- Accepted Frames keep SHA-256 and perceptual fingerprint hashes. The QC result, dimensions, flags, and quarantine status are recorded for each Seed.
-- Review status is separate from generation status. A rejected Seed returns to waiting. An accepted Frame stays in `out/`. A Frame that failed QC is quarantined instead of accepted.
+- `out/quarantine/` holds the bytes of Frames refused as they arrived, kept exactly as they arrived. See the quality record below for the only condition that puts a Frame there.
+
+### The Manifest
+
+`out/manifest.jsonl` has one line per Attempt. It is append-only: a row is appended and never rewritten, so each row keeps saying what was true when it was written. Every row written today carries `schema: 2`, which is how a current row is told apart from one an older build wrote.
+
+A row records the attempt itself: `seed`, `version` (the tag on the first line of `template.txt`), `salt`, `ts`, `status`, `error` when it failed, `source` (`api` or `manual`), `provider` and `model`, and `file` for a manual row. On a manual row `provider` and `model` are `null`, because no Provider was asked for anything.
+
+A row records the sampled Portrait too: `prompt`, `attributes` (the values that filled the template), `details`, `primaryGroup`, `groups`, `ethnicities`, `photographyProfile`, `bands`, and `attributesSource`. `attributesSource` is `run` when a generation run sampled it, and `import` when a manual import sampled it at import time to describe an image that was made elsewhere. The Prompt and the attributes come from one sampling, so a row cannot describe two Portraits.
+
+Two hashes cover the bytes:
+
+- `raw` is `{ sha256, bytes, width, height }` of the bytes as they arrived, from the Provider or from the import file, hashed before anything else touched them.
+- `normalized` is the same shape plus `steps`, and is the sha256 of the exact bytes written to `out/00001.png`. The artifact is built once, hashed, and then written from that same buffer, so the hash always matches the file on disk. `steps` records the `fit`, `position` and `format` used, which are `cover`, `attention` and `png`. A Frame refused at ingestion has a `raw` and no `normalized`, because no artifact was written for anyone to check one against.
+
+`primaryGroup` is the group the first ethnicity draw chose. It is stored separately from `groups`, and `groups` keeps the order the ethnicities are named in, so a mixed Portrait that names its second ethnicity first still records the group the draw started from.
+
+The remaining fields: `params` is `{ aspectRatio, imageSize, useNegative }` on an api row and `null` on a manual one. `templateHash` and `samplerHash` are the first 12 hex characters of the sha256 of the template text and of the sampler's definition tables, so a reader can tell which text and which tables built a Frame. `qc` is the quality record below. `duplicates` is absent, because duplicate detection does not run yet. `quarantine` holds the path and the reason for a Frame refused at ingestion.
+
+An absent key means unknown. `null` means recorded as not applicable. The string `"unknown"` is never written.
+
+Rows written before `schema: 2` are read without invention: a field the row did not record stays absent rather than being filled in from today's tables, because a row that kept no attributes never described the Portrait today's sampler would give that Seed.
+
+### The quality record
+
+Every Frame is checked with `core/qc.ts` before it is accepted. The record is `{ version, status, checks, flags, stats, perceptual }`. `checks` names every check whether or not it ran. `stats` is `{ mean, stdDev }` of the greyscale pixels those checks read. `perceptual` is `{ algo, hex, basis }`, where `basis` says whether the fingerprint came from the normalized artifact or from the raw bytes.
+
+The check names are `decode`, `dimensions`, `blank`, `luminance`, `aspect`, `duplicate_exact`, `duplicate_perceptual` and `face_presence`. Each is `pass`, `warn`, `fail` or `not_run`, and `not_run` means the check did not happen. It never means the check passed. `status` is `fail` if any check failed, otherwise `warn` if any warned, otherwise `pass`, and `not_run` only when every check is `not_run`. A check in the `not_run` state never pulls the status down.
+
+The flags are `decode_failed`, `zero_dimensions`, `near_blank`, `extreme_luminance_low`, `extreme_luminance_high`, `aspect_ratio_mismatch`, `duplicate_exact`, `duplicate_perceptual` and `duplicate_check_incomplete`. A flag is written only when its check reached the matching state.
+
+Two checks do not run, and neither has a flag:
+
+- `face_presence` is `not_run` on every Frame. No face detector runs in this repo, so nothing about a face is measured or claimed.
+- `duplicate_exact` and `duplicate_perceptual` are `not_run` on every Frame. Duplicate detection is not built yet, so no Frame is compared against any other at write time and the three duplicate flags are never written. The `perceptual.hex` fingerprint is still recorded, and the audit CLI recomputes the same fingerprint when it reports near-duplicates of its own.
+
+A Frame whose bytes will not decode, or that reports zero dimensions, is not written into the archive. Its bytes go to `out/quarantine/` and exactly one row records the Attempt, with the `quarantine` path and the reason. Every other outcome is accepted and flagged. Review status is separate from generation status: a Rejected Seed returns to waiting, and an accepted Frame stays in `out/`.
 
 ## Customize the prompts
 
@@ -117,7 +149,7 @@ Each pool holds 10 to 30 entries, except gender with 3 entries, ethnicity with 4
 
 The optional details live in `detailPools` and fill the `{features}` placeholder. They are skin details, distinctive marks, facial details, accessories and age details. Each portrait gets zero to three of them, at most one per category, so a portrait can have freckles and glasses but never two accessories. With none selected the prompt says `no prominent additional marks or accessories`. A few rules keep the result coherent. Age details need an age of 30 or more, acne marks need 45 or less, freckles are skipped for freckled skin, and the asymmetry detail is skipped for asymmetrical lips. The details are drawn after all the pools, from the same seeded random source, so a seed and salt still give one prompt.
 
-About a quarter of portraits get two ethnicities, as in `of Filipino and Brazilian background`. The share is `MIX_RATE` in `core/sampler.ts`. Six random draws are made for ethnicity whether or not a portrait is mixed, and the second ethnicity is drawn before any later pool, so mixing changes only the ethnicity text and no other trait. Mixed portraits blend skin and eye tone bands across both ethnicity groups.
+About a quarter of portraits get two ethnicities, as in `of Filipino and Brazilian background`. The share is `MIX_RATE` in `core/sampler.ts`. Six random draws are made for ethnicity whether or not a portrait is mixed, and the second ethnicity is drawn before any later pool, so mixing changes the ethnicity text and the draws that depend on the groups, and no other trait. Mixed portraits blend skin and eye tone bands across both ethnicity groups, and blend hair the same way. The group the first draw chose is recorded as `primaryGroup`, separately from `groups`, which keeps the order the ethnicities are named in, so naming the second ethnicity first does not change what `primaryGroup` says.
 
 ### Gender weights
 
@@ -236,8 +268,8 @@ A dataset is built from accepted Frames only, meaning files present in `out/`. R
 
 - Filter by prompt version before comparing or training. Mixed versions in one dataset confuse both counting and training.
 - Use `pnpm run dataset-audit -- --dir out` to check gender, primary ethnicity group, mixed status, skin band, eye band, age band, photography profile, optional detail counts, duplicates, QC flags, sparse cells, and legacy rows.
-- Treat QC flags as data quality signals. `material_crop` and `aspect_ratio_mismatch` often mean a free-app image was not 2:3 and was cropped. `duplicate_exact` and `duplicate_perceptual` flag near-duplicate Frames.
-- Do not include files under `out/quarantine/` in a dataset. They failed decoding or the quality check.
+- Treat QC flags as data quality signals. `aspect_ratio_mismatch` often means a free-app image was not 2:3 and was cropped. `near_blank` and the two `extreme_luminance` flags mark a frame with almost no detail or an implausible brightness. The duplicate flags are never written yet, because no duplicate check runs at write time; use `npm run dataset-audit` if you want near-duplicates reported.
+- Do not include files under `out/quarantine/` in a dataset. They are the bytes of frames that would not decode or reported zero dimensions.
 - Keep one salt per dataset. Switching salts mid-collection breaks traceability and changes every prompt.
 - Ethnicity group weights are synthetic controls for balance, not population statistics. Check audit counts before claiming coverage.
 - Prompt text in the Manifest lets you re-read or re-run any Portrait later, but re-running requires the same template, pools, salt, and version.
