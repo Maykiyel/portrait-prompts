@@ -15,3 +15,4 @@ Thumbs.db
 # Scratch captured while researching a vendor's API. Never part of the repo.
 .tmp-research/
 .agent-notes/
+.worktrees/
