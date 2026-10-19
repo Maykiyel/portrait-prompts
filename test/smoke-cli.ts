@@ -19,6 +19,13 @@ const policy = policyFor(providers);
 import { providers } from "../core/providers";
 import { asyncCode, bad, captureOutput, check, good, promptFiles, repoRoot, results, streamBytes, withGenerators } from "./smoke-harness";
 
+let cliDistinctCounter = 0;
+const cliDistinctGood = async () => {
+  const base = await good();
+  const i = cliDistinctCounter++;
+  return sharp(base).composite([{ input: Buffer.from(`<svg width="848" height="1264"><rect x="${(i * 37) % 800}" y="${(i * 53) % 1200}" width="24" height="24" fill="#00ff00"/></svg>`), top: 0, left: 0 }]).png().toBuffer();
+};
+
 export async function runCliContract(): Promise<void> {
   const cliVersion = promptFiles().version;
   // A command run as a real process, so its argv parsing and exit code are exercised.
@@ -48,7 +55,7 @@ export async function runCliContract(): Promise<void> {
   const cliFolder = openOutputFolder(cliOut, "");
   cliFolder.issueSeeds(6);
   await cliFolder.writeFrame({ seed: 1, buffer: await good(), model: "fixture-model", prompt: cliFolder.promptFor(1, true) });
-  await cliFolder.writeFrame({ seed: 2, buffer: await good(), model: "fixture-model", prompt: cliFolder.promptFor(2, true) });
+  await cliFolder.writeFrame({ seed: 2, buffer: await sharp(await good()).composite([{ input: Buffer.from('<svg width="848" height="1264"><rect x="1" y="1" width="5" height="5" fill="#ff0000"/></svg>'), top: 0, left: 0 }]).png().toBuffer(), model: "fixture-model", prompt: cliFolder.promptFor(2, true) });
   cliFolder.recordAttempt({ seed: 3, status: "failed", error: "fixture failure" });
 
   // status: the same lines, and the same failed count as the module.
@@ -82,8 +89,9 @@ export async function runCliContract(): Promise<void> {
     promptsRun.code === 0 &&
       promptsRun.output === `Wrote 2 prompts to ${promptsFile} (${cliVersion}, seeds 3 to 4)\n` &&
       createHash("sha256").update(promptsHtml).digest("hex") ===
-        "dc6609a9c1f44f263645d25179804c909184f530d9152dc06bfa15e409e9b02e" &&
-      promptsHtml.includes(`<b>00003</b>`) && promptsHtml.includes(cliFolder.promptFor(4)),
+        "ffccd92ff5fb7f136f9ef080e93e5b4975e6559d282c5fa4b5afa5bb3a3037f5" &&
+      promptsHtml.includes(`<b>00003</b>`) &&
+      promptsHtml.includes(cliFolder.promptFor(4)),
   ));
 
   // import: the same lines, each file named with its Seed and its dimensions.
@@ -94,7 +102,24 @@ export async function runCliContract(): Promise<void> {
   mkdirSync(impIn);
   for (const [i, [name, w, h]] of ([["oldest.png", 900, 1350], ["square.png", 1024, 1024]] as [string, number, number][]).entries()) {
     const p = join(impIn, name);
-    await sharp({ create: { width: w, height: h, channels: 3, background: "#a67a7a" } }).png().toFile(p);
+    // Each image carries structure, because a flat fill reads as near_blank and a
+    // frame that fails is quarantined rather than imported.
+    await sharp({ create: { width: w, height: h, channels: 3, background: "#a67a7a" } })
+      .composite([{
+        input: Buffer.from(
+          `<svg width="${w}" height="${h}">` +
+          `<rect width="${w}" height="${h}" fill="#8d6464"/>` +
+          `<circle cx="${w / 2}" cy="${h * 0.4}" r="${Math.round(Math.min(w, h) * 0.26)}" fill="#d9b394"/>` +
+          `<rect x="${Math.round(w * 0.18)}" y="${Math.round(h * 0.68)}" width="${Math.round(w * 0.64)}" height="${Math.round(h * 0.32)}" fill="#4a3b3b"/>` +
+          `<rect x="${Math.round(w * 0.39)}" y="${Math.round(h * 0.33)}" width="${Math.round(w * 0.08)}" height="${Math.round(h * 0.03)}" fill="#241d1d"/>` +
+          `<rect x="${Math.round(w * 0.54)}" y="${Math.round(h * 0.33)}" width="${Math.round(w * 0.08)}" height="${Math.round(h * 0.03)}" fill="#241d1d"/>` +
+          `</svg>`,
+        ),
+        top: 0,
+        left: 0,
+      }])
+      .png()
+      .toFile(p);
     utimesSync(p, new Date(2026, 0, 1, 0, i), new Date(2026, 0, 1, 0, i)); // oldest.png is the older download
   }
   const impFolder = openOutputFolder(impOut, "");
@@ -184,7 +209,7 @@ export async function runCliContract(): Promise<void> {
   ));
   // One worker, so the order of these lines is fixed rather than a race.
   const retryLines = await captureOutput(() =>
-    generateImages({ ...policy, count: 2, concurrency: 1, outDir: runOut, dryRun: false, salt: "" }, withGenerators({ gemini: good })));
+    generateImages({ ...policy, count: 2, concurrency: 1, outDir: runOut, dryRun: false, salt: "" }, withGenerators({ gemini: cliDistinctGood })));
   results.push(check(
     "the next run finishes Waiting Seeds first and does not advance the counter",
     retryLines.join("\n") === [
@@ -197,7 +222,7 @@ export async function runCliContract(): Promise<void> {
       runFolder.status().done === 2 && runFolder.status().failed === 1,
   ));
   const dryRunLines = await captureOutput(() =>
-    generateImages({ ...policy, count: 2, outDir: runOut, dryRun: true, salt: "" }, withGenerators({ gemini: good })),
+    generateImages({ ...policy, count: 2, outDir: runOut, dryRun: true, salt: "" }, withGenerators({ gemini: cliDistinctGood })),
   );
   results.push(check(
     "a dry run prints the Prompt, moves no counter and writes no Frame",
@@ -361,7 +386,7 @@ export async function runCliContract(): Promise<void> {
   results.push(check(
     "the run still refuses an unreadable counter instead of starting again",
     await asyncCode(() =>
-      generateImages({ ...policy, count: 1, outDir: cliOut, dryRun: true, salt: "" }, withGenerators({ gemini: good }))) ===
+      generateImages({ ...policy, count: 1, outDir: cliOut, dryRun: true, salt: "" }, withGenerators({ gemini: cliDistinctGood }))) ===
       "unreadable-counter",
   ));
 

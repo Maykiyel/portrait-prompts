@@ -8,7 +8,8 @@ export type ArchiveErrorCode =
   | "missing-frame"
   | "seed-not-waiting"
   | "invalid-count"
-  | "invalid-seed";
+  | "invalid-seed"
+  | "quality-failed";
 
 export class ArchiveError extends Error {
   constructor(
@@ -50,5 +51,33 @@ export class GenerationFailure extends Error {
   ) {
     super(message);
     this.name = "GenerationFailure";
+  }
+}
+
+/**
+ * A Frame refused as it arrived, rather than a call that failed.
+ *
+ * This is its own type rather than an `ArchiveError` because it is the one
+ * failure in the run that has already been recorded. The folder writes the row
+ * that says what happened, once, with the quarantine on it, and then raises this
+ * so the caller learns about it. A caller that recorded the failure again on
+ * catching it would append a second row describing the same attempt, and the
+ * second one would be the latest: the archive would lose the quarantine and
+ * report a plain failure instead.
+ *
+ * `ArchiveErrorCode` is untouched, because this is not a refusal about the
+ * folder. Every code on it is a code a caller turns into an HTTP status, and
+ * this one would be turned into a failure nobody can do anything about.
+ */
+export class FrameQuarantined extends Error {
+  constructor(
+    readonly seed: number,
+    /** Where the bytes received were kept. */
+    readonly path: string,
+    /** Why the Frame was refused, in the words the quality checks used. */
+    readonly reason: string,
+  ) {
+    super(`Seed ${seed} was quarantined on arrival: ${reason}`);
+    this.name = "FrameQuarantined";
   }
 }

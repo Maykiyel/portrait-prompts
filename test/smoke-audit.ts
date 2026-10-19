@@ -63,8 +63,11 @@ const whilePlanted = <T>(files: { path: string; contents: string }[], read: () =
 };
 
 export function runAudit(): void {
+  // `.worktrees` holds checkouts of this same repository, made for implementer
+  // sub-agents to work in. They are not source of ours: every module they contain is
+  // also in the tree above them, and auditing them would report each file twice.
   const notSource = (name: string) =>
-    name === "node_modules" || name === "dist" || name === "out" || name.startsWith("out-");
+    name === "node_modules" || name === "dist" || name === "out" || name === ".worktrees" || name.startsWith("out-");
   const sourceFiles = (dir = repoRoot, into: string[] = []): string[] => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
@@ -111,6 +114,9 @@ export function runAudit(): void {
     "cli/export-prompts.ts": "writes the HTML page the user opens in a browser",
     "cli/import-images.ts": "reads the downloads the user hands it, and sorts their timestamps",
     "server/index.ts": "serves the built UI out of web/dist",
+    "core/qc.ts": "decodes image bytes with sharp and computes deterministic quality checks",
+    "core/duplicates.ts": "decodes image bytes with sharp and computes the perceptual hash",
+    "cli/dataset-audit.ts": "reads archive files to verify stored hashes",
   };
   const reachesForFilesystem = (s: string) => /from\s+"node:(?:fs|path)"|from\s+"sharp"/.test(s);
 

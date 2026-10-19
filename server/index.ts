@@ -20,6 +20,7 @@ export const STATUS_BY_CODE: Record<ArchiveErrorCode, 400 | 404 | 409 | 500> = {
   "missing-frame": 404,
   "seed-not-waiting": 409,
   "salt-mismatch": 409,
+  "quality-failed": 409,
   "unreadable-counter": 500,
 };
 
@@ -56,6 +57,10 @@ export function createApp(dataset: Dataset, registry: ProviderRegistry): Hono {
   });
 
   api.get("/images", (c) => c.json(store.listImages()));
+  // The one full record, for the view that opens a single Frame. The list above
+  // answers with a summary per Frame on purpose, so this is where the digests,
+  // the sampled attributes and the QC record are read.
+  api.get("/images/:seed", (c) => c.json(store.frameRecord(Number(c.req.param("seed")))));
   api.get("/images/:seed/thumb", async (c) => {
     const width = Math.min(Math.max(Number(c.req.query("w") ?? 320), 80), 768);
     c.header("Content-Type", "image/webp");
@@ -69,9 +74,29 @@ export function createApp(dataset: Dataset, registry: ProviderRegistry): Hono {
     if (c.req.query("download") === "1") c.header("Content-Disposition", `attachment; filename="${seedLabel(seed)}.png"`);
     return send(c, store.readFrame(seed, c.req.query("raw") === "1"));
   });
-  api.post("/images/:seed/reject", (c) => {
-    store.rejectFrame(Number(c.req.param("seed")));
+  api.post("/images/:seed/accept", async (c) => {
+    let body: { reason?: unknown; note?: unknown } = {};
+    try { body = await c.req.json(); } catch { body = {}; }
+    const note = typeof body.note === "string" ? body.note : undefined;
+    store.acceptFrame(Number(c.req.param("seed")), note);
     return c.json({ ok: true });
+  });
+  api.post("/images/:seed/reject", async (c) => {
+    let body: { reason?: unknown; note?: unknown } = {};
+    try { body = await c.req.json(); } catch { body = {}; }
+    const reason = typeof body.reason === "string" ? body.reason : "";
+    const note = typeof body.note === "string" ? body.note : undefined;
+    const { REVIEW_REASONS } = await import("../core/manifest-types");
+    if (!REVIEW_REASONS.includes(reason as (typeof REVIEW_REASONS)[number])) return c.json({ error: "reason is required" }, 400);
+    store.rejectFrame(Number(c.req.param("seed")), reason, note);
+    return c.json({ ok: true });
+  });
+  api.get("/quarantine", (c) => c.json(store.quarantinedFrames()));
+  api.get("/quarantine/:seed/file", (c) => {
+    const seed = Number(c.req.param("seed"));
+    c.header("Content-Type", "image/png");
+    c.header("Cache-Control", "no-cache");
+    return send(c, store.readQuarantinedFrame(seed));
   });
 
   api.post("/import", async (c) => {
