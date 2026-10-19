@@ -428,6 +428,13 @@ export const PHOTOGRAPHY_PROFILES: Record<string, PhotographyProfile> = {
     allowedLighting: ["moody single-source key light", "dramatic side light with deep shadows", "soft diffused light with a subtle rim light", "gentle overhead light", "warm tungsten lamp light", "blue hour ambient light"],
     excludedLighting: ["harsh midday sun with soft fill", "bright even studio light", "warm golden hour backlight"],
   },
+  selfie: {
+    id: "selfie",
+    prompt: "a close arm's-length selfie taken with the front camera at a slight upward angle, the face and shoulders filling the frame",
+    description: "a close arm's-length selfie taken with the front camera at a slight upward angle, the face and shoulders filling the frame",
+    weight: 1,
+    allowedSettings: ["indoor", "outdoor"],
+  },
 };
 
 pools.photography = Object.keys(PHOTOGRAPHY_PROFILES);

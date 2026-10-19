@@ -551,9 +551,9 @@ results.push(check("a caller supplies the salt, not the environment", buildPromp
 delete process.env.SEED_SALT;
 const salted = Array.from({ length: 50 }, (_, i) => i + 1).filter((n) => buildPrompt(template, n, "x") !== buildPrompt(template, n, "")).length;
 results.push(check("salt changes almost every seed", salted >= 48));
-// Unsalted Seed 9's Prompt under portrait-v6: preserves the plain-seed PRNG path. Re-pin it when a pool or the template changes.
+// Unsalted Seed 9's Prompt under portrait-v7: preserves the plain-seed PRNG path. Re-pin it when a pool or the template changes.
 const plain = createHash("sha256").update(buildPrompt(template, 9, "")).digest("hex");
-results.push(check("no salt matches the plain seed", plain === "61c064472a457013e2d04d316359a290e108d7b4dcb968b17d06acb8abe2e40a"));
+results.push(check("no salt matches the plain seed", plain === "df6a7c820f6027201c3ad004e1d641af0e757df98242a002845af861ad67595b"));
 const guardDir = "out-smoke4";
 rmSync(guardDir, { recursive: true, force: true });
 openOutputFolder(guardDir, "").claimSeeds(2); // started with no salt

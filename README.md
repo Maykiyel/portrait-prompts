@@ -145,7 +145,7 @@ Two rules keep your dataset consistent.
 - Add new pool entries at the end of a pool. Inserting or reordering entries moves existing entries. Even an append changes the prompt some old seeds produce, because the draw depends on the pool's length.
 - Bump the version tag in `template.txt` whenever you change the template or pools. The manifest then shows which prompt version made each image.
 
-Each pool holds 10 to 30 entries, except gender with 3 entries, ethnicity with 47 entries spread across 11 groups, and the new photography pool with 6 profiles. Pools that change the face matter most, because they decide who the person is. These are age, gender, ethnicity, skin, eye color, eye shape, face shape, nose, lips, eyebrows, hair, facial hair and the optional details. Wardrobe, background, lighting, pose and expression only change the surroundings and mood. Facial hair applies to men only, and its pool has several empty entries so about half of them are clean-shaven.
+Each pool holds 10 to 30 entries, except gender with 3 entries, ethnicity with 47 entries spread across 11 groups, and the new photography pool with 7 profiles. Pools that change the face matter most, because they decide who the person is. These are age, gender, ethnicity, skin, eye color, eye shape, face shape, nose, lips, eyebrows, hair, facial hair and the optional details. Wardrobe, background, lighting, pose and expression only change the surroundings and mood. Facial hair applies to men only, and its pool has several empty entries so about half of them are clean-shaven.
 
 The optional details live in `detailPools` and fill the `{features}` placeholder. They are skin details, distinctive marks, facial details, accessories and age details. Each portrait gets zero to three of them, at most one per category, so a portrait can have freckles and glasses but never two accessories. With none selected the prompt says `no prominent additional marks or accessories`. A few rules keep the result coherent. Age details need an age of 30 or more, acne marks need 45 or less, freckles are skipped for freckled skin, and the asymmetry detail is skipped for asymmetrical lips. The details are drawn after all the pools, from the same seeded random source, so a seed and salt still give one prompt.
 
@@ -187,7 +187,7 @@ Some weights change how often a trait appears without forbidding it.
 
 ### Photography profiles and tuning
 
-Six photography profiles make up the photography pool: professional headshot, casual smartphone, webcam portrait, environmental portrait, candid available light, and low light portrait. Each has equal base weight and an allowed-settings list for indoor, outdoor and studio settings. Low light portrait additionally allows or excludes specific lighting entries. The profile is drawn before background and lighting, so it can tune both. Profile descriptions go into the prompt through the `{photography}` placeholder.
+Seven photography profiles make up the photography pool: professional headshot, casual smartphone, webcam portrait, environmental portrait, candid available light, low light portrait, and selfie. Each has equal base weight and an allowed-settings list for indoor, outdoor and studio settings. Low light portrait additionally allows or excludes specific lighting entries. The profile is drawn before background and lighting, so it can tune both. Profile descriptions go into the prompt through the `{photography}` placeholder.
 
 ## Command line
 
