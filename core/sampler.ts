@@ -759,6 +759,18 @@ export function composePrompt(template: string, negative: string, seed: number, 
   const prompt = `Generate an image. ${buildPrompt(template, seed, salt).trim()}`;
   return useNegative ? `${prompt}\n\nAvoid: ${negative}.` : prompt;
 }
+
+// Every table and constant the sampler draws from, gathered into one object so the
+// sampler hash below has a single, complete input. Each table is listed once, under
+// its canonical name, so the hash moves only when a table or a constant changes.
+//
+// To vary what is hashed, copy the object and edit the copy, never the module tables:
+//
+//   const modified = structuredClone(SAMPLER_TABLES);
+//   modified.pools.ethnicity[0] = "Something else";
+//   samplerHash(modified);        // a different hash from samplerHash()
+//
+// structuredClone gives a deep copy, so editing it cannot reach the live pools.
 export const SAMPLER_TABLES = {
   pools,
   detailPools,
@@ -766,40 +778,36 @@ export const SAMPLER_TABLES = {
   MAX_DETAILS,
   MIX_RATE,
   NO_DETAILS,
-  genderWeights: GENDER_WEIGHTS,
   GENDER_WEIGHTS,
   ethnicityGroups,
-  groupWeights: GROUP_WEIGHTS,
   GROUP_WEIGHTS,
-  skinBands: SKIN_BANDS,
   SKIN_BANDS,
-  eyeBands: EYE_BANDS,
   EYE_BANDS,
-  skinBandWeights: SKIN_BAND_WEIGHTS,
   SKIN_BAND_WEIGHTS,
-  eyeBandWeights: EYE_BAND_WEIGHTS,
   EYE_BAND_WEIGHTS,
-  ageRules: AGE_RULES,
+  SKIN_DETAIL_WEIGHTS,
   AGE_RULES,
   GRAY_HAIR,
-  backgroundSettings: BACKGROUND_SETTINGS,
   BACKGROUND_SETTINGS,
-  lightingAllowedSettings: LIGHTING_ALLOWED_SETTINGS,
   LIGHTING_ALLOWED_SETTINGS,
-  backgroundLightingExclusions: BACKGROUND_LIGHTING_EXCLUSIONS,
   BACKGROUND_LIGHTING_EXCLUSIONS,
-  lightNaturalHairEntries: LIGHT_NATURAL_HAIR_ENTRIES,
   LIGHT_NATURAL_HAIR_ENTRIES,
-  lightNaturalHairFactors: LIGHT_NATURAL_HAIR_FACTORS,
   LIGHT_NATURAL_HAIR_FACTORS,
-  photographyProfiles: PHOTOGRAPHY_PROFILES,
+  MIN_AGE_FOR_AGE_DETAIL,
+  MAX_AGE_FOR_ACNE,
   PHOTOGRAPHY_PROFILES,
 };
 
+// Canonical JSON: object keys sorted, array order kept because pool order is part of
+// the definition. An absent key and a key holding undefined serialize the same way,
+// which matters because the age rules leave minAge or maxAge off most entries.
 function canonicalJson(value: unknown): string {
+  if (value === undefined) return "null";
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return "{" + entries.map(([k, v]) => JSON.stringify(k) + ":" + canonicalJson(v)).join(",") + "}";
 }
 
@@ -807,13 +815,17 @@ function sha256Hex(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
+/**
+ * Fingerprint of the sampler definitions, as the first 12 hex characters of their
+ * sha256. Stored beside each Frame so a reader can tell which tables built it. Pure:
+ * it reads no clock and no random source, and the tables can be passed in so a test
+ * can hash a modified copy.
+ */
 export function samplerHash(tables: unknown = SAMPLER_TABLES): string {
   return sha256Hex(canonicalJson(tables)).slice(0, 12);
 }
-export const computeSamplerHash = samplerHash;
 
+/** Fingerprint of a Prompt template's own text, as the first 12 hex characters of its sha256. */
 export function templateHash(text: string): string {
   return sha256Hex(text).slice(0, 12);
 }
-export const computeTemplateHash = templateHash;
-export const TEMPLATE_HASH = templateHash;
