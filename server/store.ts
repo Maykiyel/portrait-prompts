@@ -1,7 +1,9 @@
 import { openOutputFolder, type OutputFolder } from "../core/output-folder";
+import type { ReviewReason } from "../core/output-folder";
+import { ArchiveError } from "../core/errors";
 import { hasKey, maxConcurrencyFor, type ProviderRegistry } from "../core/providers";
 import type {
-  ImageItem, ImportResult, PromptsResponse, ProviderInfo, Status,
+  ImageItem, ImportResult, PromptsResponse, ProviderInfo, SeedRecordItem, Status,
 } from "../shared/api-types";
 
 /**
@@ -21,9 +23,14 @@ export type Store = {
   getPending(useNegative?: boolean): PromptsResponse;
   addPrompts(count: number, useNegative?: boolean): PromptsResponse;
   listImages(): ImageItem[];
+  /** One Seed's full record. Raises `missing-frame` when no row describes that Seed. */
+  frameRecord(seed: number): SeedRecordItem;
   readFrame(seed: number, raw?: boolean): FrameStream;
+  readQuarantinedFrame(seed: number): FrameStream;
   readThumbnail(seed: number, width: number): Promise<FrameStream>;
-  rejectFrame(seed: number): void;
+  acceptFrame(seed: number, note?: string): void;
+  rejectFrame(seed: number, reason: string, note?: string): void;
+  quarantinedFrames(): ReturnType<OutputFolder["quarantinedFrames"]>;
   importFiles(files: File[], seeds: number[]): Promise<ImportResult[]>;
 };
 
@@ -73,12 +80,33 @@ export function createStore({ outDir, salt }: Dataset, registry: ProviderRegistr
 
   const listImages = (): ImageItem[] => archive().listFrames();
 
+  /**
+   * One Seed's full record for the detail view.
+   *
+   * The list route answers with a summary per Frame, so this is the only route
+   * that carries the digests, the sampled attributes and the QC record. A Seed
+   * no row describes is refused with the same code a missing Frame is, because
+   * to a caller they are the same request: there is nothing here to show.
+   */
+  const frameRecord = (seed: number): SeedRecordItem => {
+    const record = archive().frameRecord(seed);
+    if (!record) throw new ArchiveError("missing-frame", `No record for Seed ${seed}`);
+    return record;
+  };
+
   const readFrame = (seed: number, raw = false): FrameStream => archive().readFrame(seed, raw);
+  const readQuarantinedFrame = (seed: number): FrameStream => archive().readQuarantinedFrame(seed);
 
   const readThumbnail = (seed: number, width: number): Promise<FrameStream> => archive().readThumbnail(seed, width);
 
+  /** Accepts a Frame, unless its QC status is fail. */
+  const acceptFrame = (seed: number, note?: string): void => archive().acceptFrame(seed, note);
+
   /** Removes the Frame so its Seed goes back to waiting. The Manifest keeps a record. */
-  const rejectFrame = (seed: number): void => archive().rejectFrame(seed);
+  const rejectFrame = (seed: number, reason: string, note?: string): void =>
+    archive().rejectFrame(seed, reason as ReviewReason, note);
+
+  const quarantinedFrames = () => archive().quarantinedFrames();
 
   /**
    * A batch that breaks an invariant is refused whole; a file that cannot be
@@ -90,7 +118,7 @@ export function createStore({ outDir, salt }: Dataset, registry: ProviderRegistr
       seeds,
     );
 
-  return { getStatus, getPending, addPrompts, listImages, readFrame, readThumbnail, rejectFrame, importFiles };
+  return { getStatus, getPending, addPrompts, listImages, frameRecord, readFrame, readQuarantinedFrame, readThumbnail, acceptFrame, rejectFrame, quarantinedFrames, importFiles };
 }
 
 /** Why an import is refused before it reaches the module. The route turns this into a response, so no refusal here carries a status from the module. */

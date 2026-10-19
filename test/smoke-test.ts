@@ -28,6 +28,11 @@ import { refusalFor } from "../server/jobs";
 import { createStore } from "../server/store";
 import { runAudit } from "./smoke-audit";
 import { runCliContract } from "./smoke-cli";
+import { runManifestChecks } from "./smoke-manifest";
+import { runStateChecks } from "./smoke-state";
+import { runDuplicateChecks } from "./smoke-duplicates";
+import { runPhase2Checks } from "./smoke-phase2";
+import { runPhase4Checks } from "./smoke-phase4";
 import "./smoke-classifiers";
 import {
   asyncCode, bad, captureOutput, check, errorCode, good, jobOf, promptFiles, refused, repoRoot, results, withGenerators,
@@ -47,6 +52,20 @@ const policy = policyFor(providers);
 // The seam audit, in its own file: it reads source text to keep the
 // ownership claim global, while every other check here asks the module.
 runAudit();
+
+// The Manifest checks, in their own file for the same reason. They write real
+// rows through the real paths and read them back off disk, so they own
+// fixtures and clean them up, which is more than the rest of this file does.
+await runManifestChecks();
+
+// The three states of a Seed, in their own file for the same reason: they are
+// derived from the Manifest rather than asked of the folder, and they change
+// for their own reason. They write review rows and refuse bytes, so they own
+// their fixtures and clean them up.
+await runStateChecks();
+await runDuplicateChecks();
+await runPhase2Checks();
+await runPhase4Checks();
 
 // The five-digit Seed label is stated twice: the module owns it for
 // filenames and the command line, and the browser states it for display,
@@ -88,7 +107,13 @@ const apiRequest = (over: Partial<RunRequest>, generate: Generator = good): RunR
   generate,
   ...over,
 });
-const apiRun = async (over: Partial<RunRequest>, generate: Generator = good) => {
+let smokeDistinctCounter = 0;
+const smokeDistinctGood = async () => {
+  const base = await good();
+  const i = smokeDistinctCounter++;
+  return sharp(base).composite([{ input: Buffer.from(`<svg width="848" height="1264"><rect x="${(i * 37) % 800}" y="${(i * 53) % 1200}" width="24" height="24" fill="#00ff00"/></svg>`), top: 0, left: 0 }]).png().toBuffer();
+};
+const apiRun = async (over: Partial<RunRequest>, generate: Generator = smokeDistinctGood) => {
   const events: ProgressEvent[] = [];
   const result = await run({ ...apiRequest(over, generate), onEvent: (event) => events.push(event) });
   return { events, result };
@@ -206,7 +231,27 @@ manual.claimSeeds(3); // what the prompts command does
 mkdirSync(inDir);
 for (const [i, name] of ["b.png", "a.png"].entries()) {
   const p = `${inDir}/${name}`;
-  await sharp({ create: { width: 1024, height: 1024, channels: 3, background: "#a67a7a" } }).png().toFile(p);
+  // Square on purpose, so the crop warning has something real to report. It still
+  // carries structure, because a flat fill fails the near_blank check and a frame
+  // that fails is quarantined rather than imported.
+  await sharp({
+    create: { width: 1024, height: 1024, channels: 3, background: name === "a.png" ? "#a67a7a" : "#7a8fa6" },
+  })
+    .composite([{
+      input: Buffer.from(
+        '<svg width="1024" height="1024">' +
+        '<rect width="1024" height="1024" fill="' + (name === "a.png" ? "#8d6464" : "#648d8d") + '"/>' +
+        '<circle cx="512" cy="400" r="260" fill="#d9b394"/>' +
+        '<rect x="180" y="700" width="664" height="324" fill="#4a3b3b"/>' +
+        '<rect x="400" y="330" width="80" height="38" fill="#241d1d"/>' +
+        '<rect x="556" y="330" width="80" height="38" fill="#241d1d"/>' +
+        '</svg>',
+      ),
+      top: 0,
+      left: 0,
+    }])
+    .png()
+    .toFile(p);
   utimesSync(p, new Date(2026, 0, 1, 0, i), new Date(2026, 0, 1, 0, i)); // b is oldest
 }
 await importImages({ inDir, outDir: out2, dryRun: false, salt: "" });
@@ -506,9 +551,9 @@ results.push(check("a caller supplies the salt, not the environment", buildPromp
 delete process.env.SEED_SALT;
 const salted = Array.from({ length: 50 }, (_, i) => i + 1).filter((n) => buildPrompt(template, n, "x") !== buildPrompt(template, n, "")).length;
 results.push(check("salt changes almost every seed", salted >= 48));
-// Unsalted Seed 9's Prompt under portrait-v5: preserves the plain-seed PRNG path. Re-pin it when a pool or the template changes.
+// Unsalted Seed 9's Prompt under portrait-v7: preserves the plain-seed PRNG path. Re-pin it when a pool or the template changes.
 const plain = createHash("sha256").update(buildPrompt(template, 9, "")).digest("hex");
-results.push(check("no salt matches the plain seed", plain === "83c1038813244cf36ba7d35806d475e14f665d54fc56f4ebd76eb1f33e0003a9"));
+results.push(check("no salt matches the plain seed", plain === "df6a7c820f6027201c3ad004e1d641af0e757df98242a002845af861ad67595b"));
 const guardDir = "out-smoke4";
 rmSync(guardDir, { recursive: true, force: true });
 openOutputFolder(guardDir, "").claimSeeds(2); // started with no salt
@@ -524,7 +569,7 @@ results.push(check(
   "every placeholder has a pool or a derived source, and every pool is used",
   [...placeholders].sort().join() === [...Object.keys(pools), ...derivedPlaceholders].sort().join(),
 ));
-const small = Object.entries(pools).filter(([k, xs]) => k !== "gender" && xs.length < 10).map(([k]) => k);
+const small = Object.entries(pools).filter(([k, xs]) => k !== "gender" && k !== "photography" && xs.length < 10).map(([k]) => k);
 results.push(check("each pool has 10 or more entries except gender", small.length === 0));
 const prompts = Array.from({ length: 500 }, (_, i) => buildPrompt(template, i + 1, "t"));
 results.push(check("500 prompts are almost all unique", new Set(prompts).size >= 495));
@@ -598,16 +643,9 @@ results.push(check(
     p.includes(`Their eyes are ${x.values.eyeShape} and ${x.values.eyeColor}`)),
 ));
 results.push(check("no placeholder is left unresolved in a finished prompt", anatomyPrompts.every(({ p }) => !/[{}]/.test(p))));
-const fixedLines = [
-  "Vertical 2:3 frame, chest-up, eye-level camera, face fills most of the image.",
-  "heavily blurred",
-  "Shot on an 85mm lens at f/1.8, sharp focus on the eyes, strong separation between subject and background.",
-  "Visible skin pores, individual hair strands, natural catchlights in the eyes.",
-];
 results.push(check(
-  "the fixed photographic instructions are in every prompt, including those with no details",
-  anatomyPrompts.some(({ s: x }) => x.details.length === 0) &&
-    anatomyPrompts.every(({ p }) => fixedLines.every((line) => p.includes(line))),
+  "every prompt has the vertical 2:3 composition and a photography profile",
+  anatomyPrompts.every(({ p }) => /Vertical 2:3 composition/.test(p) && /Photographic style and framing:/.test(p)),
 ));
 const negative = readFileSync("negative.txt", "utf8").trim();
 const negativeItems = negative.split(",").map((x) => x.trim());
@@ -616,7 +654,7 @@ results.push(check(
   "the negative list excludes motion blur and an out-of-focus subject",
   ["motion blur", "out-of-focus face", "missed focus", "soft-focus subject"].every((x) => negativeItems.includes(x)),
 ));
-results.push(check("the positive template still asks for a blurred background", /Setting is \{background\}, heavily blurred/.test(template)));
+results.push(check("the template keeps the photography placeholder", /\{photography\}/.test(template)));
 results.push(check(
   "composePrompt joins the lead-in, the filled template and the negative list",
   composePrompt(template, negative, 5, "a", true) ===
@@ -678,7 +716,7 @@ try {
   const img = await good();
   // Bytes that travel unchanged even after a resize: used to prove the raw path
   // is verbatim rather than re-encoded, by tacking on a byte sharp will drop.
-  const imgPlusJunk = Buffer.concat([img, Buffer.from([0x42])]);
+  const imgPlusJunk = Buffer.concat([await smokeDistinctGood(), Buffer.from([0x42])]);
   const imports = await folder.importFrames(
     [{ name: "corrupt.png", buffer: Buffer.from("bad") }, { name: "good.png", buffer: img }], [1, 2],
   );
@@ -708,9 +746,9 @@ try {
   results.push(check("Frame records are newest-first with Attempt provenance",
     folder.listFrames().map((frame) => frame.seed).join() === "5,2" &&
     folder.listFrames()[0].model === "fixture-model" && folder.listFrames()[0].prompt === folder.promptFor(5, true)));
-  folder.rejectFrame(2);
+  folder.rejectFrame(2, "other");
   results.push(check("Rejection returns a Seed to waiting", !folder.hasFrame(2) && folder.waitingSeeds().includes(2) && folder.listFrames().map((frame) => frame.seed).join() === "5"));
-  results.push(check("a second Rejection raises the missing-Frame code", errorCode(() => folder.rejectFrame(2)) === "missing-frame"));
+  results.push(check("a second Rejection raises the missing-Frame code", errorCode(() => folder.rejectFrame(2, "other")) === "missing-frame"));
   // Which download lands on which Seed is the adapter's decision, so the module
   // has no download time to match on. These two lines are a compile-time check:
   // drop the error on the second and typecheck fails.
@@ -774,7 +812,7 @@ try {
   const seeded = openOutputFolder(routeDir, "route-salt");
   seeded.issueSeeds(3); // Seeds 1 to 3 are waiting
   await seeded.importFrames([{ name: "one.png", buffer: await good() }], [1]);
-  const api = createApp({ outDir: routeDir, salt: "route-salt" }, withGenerators({ gemini: good }));
+  const api = createApp({ outDir: routeDir, salt: "route-salt" }, withGenerators({ gemini: smokeDistinctGood }));
   // A route that raises each code with a message nobody would ever write, so the
   // status can only have come from the code.
   for (const code of codes)
@@ -791,7 +829,7 @@ try {
   const request: import("../shared/api-types").GenerateRequest = { count: 1, provider: "gemini", model: "flash", size: "1K", concurrency: 1, useNegative: false };
 
   results.push(check("one table maps every ArchiveErrorCode to a status, and nothing keys on text",
-    codes.length === 6 && codes.every((code) => typeof STATUS_BY_CODE[code] === "number")));
+    codes.length === 7 && codes.every((code) => typeof STATUS_BY_CODE[code] === "number")));
   for (const code of codes) {
     const reworded = await api.request(`/reworded/${code}`);
     const body = (await reworded.json()) as { error?: string };
@@ -839,7 +877,7 @@ try {
       .request("/api/prompts/pending")).status === STATUS_BY_CODE["salt-mismatch"]));
 
   const partial = await images(
-    [{ name: "corrupt.png", buffer: Buffer.from("not an image") }, { name: "three.png", buffer: await good() }], [2, 3],
+    [{ name: "corrupt.png", buffer: Buffer.from("not an image") }, { name: "three.png", buffer: await smokeDistinctGood() }], [2, 3],
   );
   const perFile = (await partial.json()) as { results: { seed: number; ok: boolean }[] };
   results.push(check("one corrupt download still answers per file, and the other Frame lands",
@@ -865,11 +903,11 @@ try {
     (await notAnArray("5")) === 400));
 
   results.push(check("a Rejection through the route returns the Seed to waiting",
-    (await api.request("/api/images/3/reject", { method: "POST" })).status === 200 &&
+    (await api.request("/api/images/3/reject", { method: "POST", body: JSON.stringify({ reason: "other" }), headers: { "Content-Type": "application/json" } })).status === 200 &&
     !seeded.hasFrame(3) && seeded.waitingSeeds().join() === "2,3" &&
     (await api.request("/api/images/3/file")).status === STATUS_BY_CODE["missing-frame"]));
   results.push(check("a second Rejection is refused with the missing-Frame status",
-    (await api.request("/api/images/3/reject", { method: "POST" })).status === STATUS_BY_CODE["missing-frame"]));
+    (await api.request("/api/images/3/reject", { method: "POST", body: JSON.stringify({ reason: "other" }), headers: { "Content-Type": "application/json" } })).status === STATUS_BY_CODE["missing-frame"]));
 
   const noKey = await api.request("/api/generate", { method: "POST", body: JSON.stringify(request) });
   results.push(check("the Job refuses to start without an API key",
@@ -977,7 +1015,7 @@ const policySpy = () => {
     // calls in flight is the number of workers rather than a race.
     await new Promise((resolve) => setTimeout(resolve, 5));
     calls.inFlight--;
-    return good();
+    return smokeDistinctGood();
   };
   return { seen, calls, generate };
 };
@@ -1144,7 +1182,7 @@ const held: Generator = async () => {
   for (let waited = 0; !gate.open && waited < 5000; waited += 10) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  return good();
+  return smokeDistinctGood();
 };
 // A Job asks the process whether an API key is set on every start, and nothing
 // else does; the fake Generator never uses one. Put back below.
@@ -1153,7 +1191,7 @@ try {
   // Fixture setup asks the module directly; every assertion below is an HTTP
   // response from an app.
   process.chdir(join(pairBase, "alpha-prompt-files"));
-  const alpha = createApp({ outDir: alphaDir, salt: "alpha" }, withGenerators({ gemini: good }));
+  const alpha = createApp({ outDir: alphaDir, salt: "alpha" }, withGenerators({ gemini: smokeDistinctGood }));
   const alphaFolder = openOutputFolder(alphaDir, "alpha");
   alphaFolder.issueSeeds(2);
   await alphaFolder.importFrames([{ name: "alpha.png", buffer: await good() }], [1]);

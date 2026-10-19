@@ -1,4 +1,4 @@
-import { namedSeeds, openOutputFolder } from "./output-folder";
+import { FrameQuarantined, namedSeeds, openOutputFolder } from "./output-folder";
 import { GenerationFailure } from "./errors";
 
 /**
@@ -200,29 +200,52 @@ export async function run(request: RunRequest): Promise<RunResult> {
   async function worker() {
     while (next < todo.length) {
       const seed = todo[next++];
-      const prompt = folder.promptFor(seed, request.useNegative);
+      // One sampling, asked for once, and everything the row about this Seed
+      // comes from it: the Prompt that is sent and the attributes that are
+      // recorded. Drawing twice would let the two describe different Portraits,
+      // and the row would say so.
+      const sample = folder.sampleFor(seed, request.useNegative);
       try {
         if (request.dryRun) {
-          report({ kind: "prompt", seed, prompt });
+          report({ kind: "prompt", seed, prompt: sample.prompt });
           continue;
         }
-        const buffer = await request.generate(prompt, {
+        const buffer = await request.generate(sample.prompt, {
           model: request.model,
           aspectRatio: request.aspectRatio,
           imageSize: request.imageSize,
         });
         // In this order, because it is the order a reader depends on: the Frame
         // is on disk before it is counted, and counted before it is reported.
+        // The provenance goes down with the bytes, because a row that records
+        // what was asked for and not who asked it is half a record.
         await folder.writeFrame({
           seed,
           buffer,
+          sample,
+          source: "api",
           provider: request.provider,
           model: request.model,
-          prompt,
+          attributesSource: "run",
+          params: {
+            aspectRatio: request.aspectRatio,
+            imageSize: request.imageSize,
+            useNegative: request.useNegative,
+          },
         });
         done++;
         report({ kind: "seed", seed, ok: true, blocked: false });
       } catch (err) {
+        // A Frame refused as it arrived is not a call that failed: the folder has
+        // already written the one row that says what happened, with the
+        // quarantine on it, and recording it again here would append a second
+        // plain failure that became the latest and lost all of that. So the run
+        // reports it and leaves the record alone.
+        if (err instanceof FrameQuarantined) {
+          failed++;
+          report({ kind: "seed", seed, ok: false, blocked: false, message: err.message });
+          continue;
+        }
         // A Provider reports a refusal as a code rather than as prose, so this
         // decision cannot be changed by rewording a message. Everything else is
         // a failure the next run might clear, and the Seed keeps waiting.
@@ -231,12 +254,22 @@ export async function run(request: RunRequest): Promise<RunResult> {
         if (isBlocked) blocked++;
         else failed++;
         // Recorded before it is reported, so a Seed reported as finished is on
-        // the record as finished, and one reported as failed keeps waiting.
+        // the record as finished, and one reported as failed keeps waiting. The
+        // sampling goes on the row even here: the Prompt was sent, so what it
+        // was made of is a fact about the attempt rather than a thing that
+        // happened only on success.
         folder.recordAttempt({
           seed,
+          sample,
+          source: "api",
           provider: request.provider,
           model: request.model,
-          prompt,
+          attributesSource: "run",
+          params: {
+            aspectRatio: request.aspectRatio,
+            imageSize: request.imageSize,
+            useNegative: request.useNegative,
+          },
           status: isBlocked ? "blocked" : "failed",
           error,
         });
