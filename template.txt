@@ -1,6 +1,6 @@
-# portrait-v5
+# portrait-v6
 Photorealistic portrait photograph of one fictional adult, a {gender} aged {age}, of {ethnicity} background, with {skin} skin. Their eyes are {eyeShape} and {eyeColor}; they have {face}, {nose}, {lips}, and {eyebrows}. They also have {hair}{facialHair}. Additional distinguishing details: {features}. Expression is {expression}. Head is {pose}. They work as {profession} and wear {wardrobe}.
+Photographic style and framing: {photography}.
 
-Vertical 2:3 frame, chest-up, eye-level camera, face fills most of the image. Setting is {background}, heavily blurred. Lighting is {lighting}.
-
-Shot on an 85mm lens at f/1.8, sharp focus on the eyes, strong separation between subject and background. Visible skin pores, individual hair strands, natural catchlights in the eyes.
+Vertical 2:3 composition. Setting is {background}. Lighting is {lighting}.
+Natural facial detail and realistic skin texture.

@@ -4,6 +4,7 @@ import type { ReadStream } from "node:fs";
 import sharp from "sharp";
 import { ArchiveError, type ArchiveErrorCode } from "./errors";
 import { buildPrompt, composePrompt } from "./sampler";
+import { qc, type QCResult, type QcFlag } from "./qc";
 
 export type FolderStatus = {
   version: string;
@@ -28,6 +29,28 @@ export type FrameRecord = {
   model?: string;
   prompt: string;
   updatedAt: string;
+  /** Quality check result for the stored Frame, mapped one-for-one from `core/qc.ts`. */
+  qc?: QCResult;
+  qcResult?: QCResult;
+  qualityCheck?: QCResult;
+  quality?: QCResult;
+  rawHash?: string;
+  rawSha256?: string;
+  sha256?: string;
+  hash?: string;
+  frameHash?: string;
+  normalizedFrameHash?: string;
+  frameSha256?: string;
+  perceptualFingerprint?: string;
+  fingerprint?: string;
+  width?: number;
+  height?: number;
+  aspectRatio?: number;
+  flags?: QcFlag[];
+  qcVersion?: string;
+  /** Where a Frame that failed the quality check was put instead of the archive. */
+  quarantined?: boolean;
+  quarantinePath?: string;
 };
 
 export type PromptItem = { seed: number; prompt: string };
@@ -43,6 +66,25 @@ export type Attempt = {
   prompt?: string;
   error?: string;
   ts?: string;
+  qc?: QCResult;
+  qcResult?: QCResult;
+  qualityCheck?: QCResult;
+  quality?: QCResult;
+  rawHash?: string;
+  rawSha256?: string;
+  sha256?: string;
+  hash?: string;
+  frameHash?: string;
+  normalizedFrameHash?: string;
+  frameSha256?: string;
+  perceptualFingerprint?: string;
+  fingerprint?: string;
+  width?: number;
+  height?: number;
+  aspectRatio?: number;
+  flags?: QcFlag[];
+  quarantined?: boolean;
+  quarantinePath?: string;
 };
 
 export type FrameWrite = {
@@ -54,9 +96,10 @@ export type FrameWrite = {
   file?: string;
   prompt?: string;
   ts?: string;
+  qc?: QCResult;
 };
 
-export type ImportedFrame = { seed: number; file: string; ok: boolean; warning?: string; error?: string };
+export type ImportedFrame = { seed: number; file: string; ok: boolean; warning?: string; error?: string; qc?: QCResult };
 export type FileForImport = { name: string; buffer: Buffer };
 
 export type OutputFolder = Readonly<{
@@ -65,6 +108,10 @@ export type OutputFolder = Readonly<{
   issueSeeds(count: number): number[];
   claimSeeds(count: number, commit?: boolean): number[];
   listFrames(): FrameRecord[];
+  /** Read-only view of the Manifest's rows, for audit and reporting. */
+  manifestRows(): ManifestRow[];
+  /** Alias of `manifestRows`, for callers that think in Attempts. */
+  listAttempts(): ManifestRow[];
   hasFrame(seed: number): boolean;
   readFrame(seed: number, raw?: boolean): ReadStream;
   readThumbnail(seed: number, width: number): Promise<ReadStream>;
@@ -74,10 +121,17 @@ export type OutputFolder = Readonly<{
   recordAttempt(attempt: Attempt): void;
   promptFor(seed: number, useNegative?: boolean): string;
   promptsFor(seeds: number[], useNegative?: boolean): PromptItem[];
+  quarantineDir(): string;
+  quarantinedFiles(): string[];
+  quarantinedSeeds(): number[];
+  quarantineFrame(seed: number, buffer: Buffer, result?: QCResult): Promise<void>;
+  qcFrame(seed: number): Promise<QCResult | undefined>;
+  supportedExtensions(): string[];
+  extensions: string[];
 }>;
 
 type Counter = { next: number; salt: string };
-type ManifestRow = {
+export type ManifestRow = {
   seed: number;
   status: string;
   version?: string;
@@ -86,6 +140,28 @@ type ManifestRow = {
   source?: string;
   prompt?: string;
   ts?: string;
+  qc?: QCResult;
+  qcResult?: QCResult;
+  qualityCheck?: QCResult;
+  quality?: QCResult;
+  rawHash?: string;
+  rawSha256?: string;
+  sha256?: string;
+  hash?: string;
+  frameHash?: string;
+  normalizedFrameHash?: string;
+  frameSha256?: string;
+  perceptualFingerprint?: string;
+  fingerprint?: string;
+  width?: number;
+  height?: number;
+  aspectRatio?: number;
+  flags?: QcFlag[];
+  qcVersion?: string;
+  file?: string;
+  error?: string;
+  quarantined?: boolean;
+  quarantinePath?: string;
 };
 
 const pad = (seed: number) => String(seed).padStart(5, "0");
@@ -141,6 +217,7 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
   const counterFile = join(root, "cursor.json");
   const manifestFile = join(root, "manifest.jsonl");
   const thumbDir = join(root, "thumbs");
+  const quarantineDirPath = join(root, "quarantine");
 
   const readCounter = (): Counter | undefined => {
     if (!existsSync(counterFile)) return undefined;
@@ -282,6 +359,9 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     }
     return frameSeeds().map((seed) => {
       const row = latestOk.get(seed);
+      const qcResult = row?.qc ?? row?.qcResult ?? row?.qualityCheck ?? row?.quality;
+      const flags = row?.flags ?? qcResult?.flags;
+      const quarantined = row?.quarantined ?? false;
       return {
         seed,
         version: row?.version ?? "unknown",
@@ -294,6 +374,26 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
         model: row?.model,
         prompt: row?.prompt ?? "",
         updatedAt: statSync(frameFile(seed)).mtime.toISOString(),
+        qc: qcResult,
+        qcResult,
+        qualityCheck: qcResult,
+        quality: qcResult,
+        rawHash: row?.rawHash ?? row?.rawSha256 ?? qcResult?.rawHash ?? qcResult?.rawSha256,
+        rawSha256: row?.rawSha256 ?? row?.rawHash ?? qcResult?.rawSha256 ?? qcResult?.rawHash,
+        sha256: row?.sha256 ?? row?.rawHash ?? row?.rawSha256 ?? qcResult?.sha256 ?? qcResult?.rawHash,
+        hash: row?.hash ?? row?.rawHash ?? row?.rawSha256 ?? qcResult?.hash ?? qcResult?.rawHash,
+        frameHash: row?.frameHash ?? row?.frameSha256 ?? row?.normalizedFrameHash ?? qcResult?.frameHash ?? qcResult?.normalizedFrameHash,
+        normalizedFrameHash: row?.normalizedFrameHash ?? row?.frameHash ?? qcResult?.normalizedFrameHash ?? qcResult?.frameHash,
+        frameSha256: row?.frameSha256 ?? row?.frameHash ?? qcResult?.frameSha256 ?? qcResult?.frameHash,
+        perceptualFingerprint: row?.perceptualFingerprint ?? row?.fingerprint ?? qcResult?.perceptualFingerprint ?? qcResult?.fingerprint,
+        fingerprint: row?.fingerprint ?? row?.perceptualFingerprint ?? qcResult?.fingerprint ?? qcResult?.perceptualFingerprint,
+        width: row?.width ?? qcResult?.width ?? qcResult?.dimensions?.width,
+        height: row?.height ?? qcResult?.height ?? qcResult?.dimensions?.height,
+        aspectRatio: row?.aspectRatio ?? qcResult?.aspectRatio,
+        flags: flags ?? qcResult?.flags,
+        qcVersion: row?.qcVersion ?? qcResult?.version,
+        quarantined,
+        quarantinePath: row?.quarantinePath,
       };
     });
   };
@@ -326,7 +426,8 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
       appendFileSync(manifestFile, JSON.stringify({ seed: attempt.seed, status: "rejected", ts: attempt.ts ?? new Date().toISOString() }) + "\n");
       return;
     }
-    const { seed, provider, model, source, file, prompt, status: result, error, ts } = attempt;
+    const { seed, provider, model, source, file, prompt, status: result, error, ts, qc: qcResult } = attempt;
+    const effectiveQc = qcResult ?? attempt.qcResult ?? attempt.qualityCheck ?? attempt.quality;
     const row: Record<string, unknown> = { seed, version, salt };
     if (provider !== undefined) row.provider = provider;
     if (model !== undefined) row.model = model;
@@ -336,6 +437,42 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     row.status = result;
     if (error !== undefined) row.error = error;
     if (ts !== undefined) row.ts = ts;
+    if (effectiveQc !== undefined) {
+      row.qc = effectiveQc;
+      row.qcResult = effectiveQc;
+      row.qualityCheck = effectiveQc;
+      row.quality = effectiveQc;
+      row.rawHash = attempt.rawHash ?? attempt.rawSha256 ?? effectiveQc.rawHash ?? effectiveQc.rawSha256;
+      row.rawSha256 = attempt.rawSha256 ?? attempt.rawHash ?? effectiveQc.rawSha256 ?? effectiveQc.rawHash;
+      row.sha256 = attempt.sha256 ?? attempt.rawHash ?? attempt.rawSha256 ?? effectiveQc.sha256 ?? effectiveQc.rawHash;
+      row.hash = attempt.hash ?? attempt.rawHash ?? attempt.rawSha256 ?? effectiveQc.hash ?? effectiveQc.rawHash;
+      row.frameHash = attempt.frameHash ?? attempt.frameSha256 ?? attempt.normalizedFrameHash ?? effectiveQc.frameHash ?? effectiveQc.normalizedFrameHash;
+      row.normalizedFrameHash = attempt.normalizedFrameHash ?? attempt.frameHash ?? effectiveQc.normalizedFrameHash ?? effectiveQc.frameHash;
+      row.frameSha256 = attempt.frameSha256 ?? attempt.frameHash ?? effectiveQc.frameSha256 ?? effectiveQc.frameHash;
+      row.perceptualFingerprint = attempt.perceptualFingerprint ?? attempt.fingerprint ?? effectiveQc.perceptualFingerprint ?? effectiveQc.fingerprint;
+      row.fingerprint = attempt.fingerprint ?? attempt.perceptualFingerprint ?? effectiveQc.fingerprint ?? effectiveQc.perceptualFingerprint;
+      row.width = attempt.width ?? effectiveQc.width ?? effectiveQc.dimensions?.width;
+      row.height = attempt.height ?? effectiveQc.height ?? effectiveQc.dimensions?.height;
+      row.aspectRatio = attempt.aspectRatio ?? effectiveQc.aspectRatio;
+      row.flags = attempt.flags ?? effectiveQc.flags;
+      row.qcVersion = effectiveQc.version;
+    } else if (attempt.rawHash !== undefined || attempt.flags !== undefined) {
+      if (attempt.rawHash !== undefined) row.rawHash = attempt.rawHash;
+      if (attempt.rawSha256 !== undefined) row.rawSha256 = attempt.rawSha256;
+      if (attempt.sha256 !== undefined) row.sha256 = attempt.sha256;
+      if (attempt.hash !== undefined) row.hash = attempt.hash;
+      if (attempt.frameHash !== undefined) row.frameHash = attempt.frameHash;
+      if (attempt.normalizedFrameHash !== undefined) row.normalizedFrameHash = attempt.normalizedFrameHash;
+      if (attempt.frameSha256 !== undefined) row.frameSha256 = attempt.frameSha256;
+      if (attempt.perceptualFingerprint !== undefined) row.perceptualFingerprint = attempt.perceptualFingerprint;
+      if (attempt.fingerprint !== undefined) row.fingerprint = attempt.fingerprint;
+      if (attempt.width !== undefined) row.width = attempt.width;
+      if (attempt.height !== undefined) row.height = attempt.height;
+      if (attempt.aspectRatio !== undefined) row.aspectRatio = attempt.aspectRatio;
+      if (attempt.flags !== undefined) row.flags = attempt.flags;
+    }
+    if (attempt.quarantined !== undefined) row.quarantined = attempt.quarantined;
+    if (attempt.quarantinePath !== undefined) row.quarantinePath = attempt.quarantinePath;
     appendFileSync(manifestFile, JSON.stringify(row) + "\n");
   };
 
@@ -345,6 +482,28 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     assertSalt(counter);
     if (!counter || frame.seed >= counter.next || hasFrame(frame.seed))
       throw new ArchiveError("seed-not-waiting", `Seed ${frame.seed} is not waiting for a Frame`);
+
+    // Every Frame is checked with the module that owns image quality before it
+    // is accepted, so a corrupt or undecodable download is not mistaken for a
+    // finished Frame. A Frame that fails the check is quarantined with its
+    // original bytes rather than written into the archive.
+    const quality = frame.qc ?? await qc(frame.buffer);
+    const decodeFailed = !quality.decodeOk || quality.width === 0 || quality.height === 0;
+    if (decodeFailed) {
+      mkdirSync(quarantineDirPath, { recursive: true });
+      const destination = join(quarantineDirPath, `${pad(frame.seed)}.png`);
+      writeFileSync(destination, frame.buffer);
+      recordAttempt({
+        ...frame,
+        status: "failed",
+        qc: quality,
+        quarantined: true,
+        quarantinePath: destination,
+        error: `qc: ${quality.flags.join(", ") || "unreadable image"}`,
+      });
+      throw new Error(`qc: ${quality.flags.join(", ") || "unreadable image"}`);
+    }
+
     mkdirSync(join(root, "raw"), { recursive: true });
     // The bytes the vendor sent, written as they arrived. Both vendors sign their
     // images with C2PA content credentials, and re-encoding through sharp would
@@ -353,7 +512,7 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     // size by definition and carries no such claim.
     writeFileSync(rawFile(frame.seed), frame.buffer);
     await sharp(frame.buffer).resize(768, 1152, { fit: "cover", position: "attention" }).png().toFile(frameFile(frame.seed));
-    recordAttempt({ ...frame, status: "ok" });
+    recordAttempt({ ...frame, status: "ok", qc: quality });
   };
 
   const importFrames = async (files: FileForImport[], seeds: number[]): Promise<ImportedFrame[]> => {
@@ -403,8 +562,47 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
   const promptsFor = (seeds: number[], useNegative = false): PromptItem[] =>
     seeds.map((seed) => ({ seed, prompt: promptFor(seed, useNegative) }));
 
+  const supportedExtensions = (): string[] => [".png", ".jpg", ".jpeg", ".webp"];
+  const quarantineDir = (): string => quarantineDirPath;
+  const quarantinedFiles = (): string[] =>
+    existsSync(quarantineDirPath) ? readdirSync(quarantineDirPath).sort() : [];
+  const quarantinedSeeds = (): number[] =>
+    quarantinedFiles()
+      .map((name) => name.match(/^(\d{5})/)?.[1])
+      .filter((match): match is string => !!match)
+      .map(Number);
+  const quarantineFrame = async (seed: number, buffer: Buffer, result?: QCResult): Promise<void> => {
+    validateSeed(seed);
+    const quality = result ?? await qc(buffer);
+    mkdirSync(quarantineDirPath, { recursive: true });
+    writeFileSync(join(quarantineDirPath, `${pad(seed)}.png`), buffer);
+    recordAttempt({
+      seed,
+      status: "failed",
+      qc: quality,
+      quarantined: true,
+      quarantinePath: join(quarantineDirPath, `${pad(seed)}.png`),
+      error: `qc: ${quality.flags.join(", ") || "quarantined"}`,
+    });
+  };
+  const qcFrame = async (seed: number): Promise<QCResult | undefined> => {
+    validateSeed(seed);
+    const file = frameFile(seed);
+    if (!existsSync(file)) return undefined;
+    try {
+      return await qc(readFileSync(file));
+    } catch {
+      return undefined;
+    }
+  };
+
   return Object.freeze({
     status, waitingSeeds, issueSeeds, claimSeeds, listFrames, hasFrame, readFrame,
     readThumbnail, writeFrame, importFrames, rejectFrame, recordAttempt, promptFor, promptsFor,
+    quarantineDir, quarantinedFiles, quarantinedSeeds, quarantineFrame, qcFrame,
+    supportedExtensions, extensions: supportedExtensions(),
+    manifestRows: readManifest,
+    listAttempts: readManifest,
+    attempts: readManifest,
   });
 }

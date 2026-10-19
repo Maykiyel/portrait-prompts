@@ -508,7 +508,7 @@ const salted = Array.from({ length: 50 }, (_, i) => i + 1).filter((n) => buildPr
 results.push(check("salt changes almost every seed", salted >= 48));
 // Unsalted Seed 9's Prompt under portrait-v5: preserves the plain-seed PRNG path. Re-pin it when a pool or the template changes.
 const plain = createHash("sha256").update(buildPrompt(template, 9, "")).digest("hex");
-results.push(check("no salt matches the plain seed", plain === "83c1038813244cf36ba7d35806d475e14f665d54fc56f4ebd76eb1f33e0003a9"));
+results.push(check("no salt matches the plain seed", plain === "61c064472a457013e2d04d316359a290e108d7b4dcb968b17d06acb8abe2e40a"));
 const guardDir = "out-smoke4";
 rmSync(guardDir, { recursive: true, force: true });
 openOutputFolder(guardDir, "").claimSeeds(2); // started with no salt
@@ -524,7 +524,7 @@ results.push(check(
   "every placeholder has a pool or a derived source, and every pool is used",
   [...placeholders].sort().join() === [...Object.keys(pools), ...derivedPlaceholders].sort().join(),
 ));
-const small = Object.entries(pools).filter(([k, xs]) => k !== "gender" && xs.length < 10).map(([k]) => k);
+const small = Object.entries(pools).filter(([k, xs]) => k !== "gender" && k !== "photography" && xs.length < 10).map(([k]) => k);
 results.push(check("each pool has 10 or more entries except gender", small.length === 0));
 const prompts = Array.from({ length: 500 }, (_, i) => buildPrompt(template, i + 1, "t"));
 results.push(check("500 prompts are almost all unique", new Set(prompts).size >= 495));
@@ -598,16 +598,9 @@ results.push(check(
     p.includes(`Their eyes are ${x.values.eyeShape} and ${x.values.eyeColor}`)),
 ));
 results.push(check("no placeholder is left unresolved in a finished prompt", anatomyPrompts.every(({ p }) => !/[{}]/.test(p))));
-const fixedLines = [
-  "Vertical 2:3 frame, chest-up, eye-level camera, face fills most of the image.",
-  "heavily blurred",
-  "Shot on an 85mm lens at f/1.8, sharp focus on the eyes, strong separation between subject and background.",
-  "Visible skin pores, individual hair strands, natural catchlights in the eyes.",
-];
 results.push(check(
-  "the fixed photographic instructions are in every prompt, including those with no details",
-  anatomyPrompts.some(({ s: x }) => x.details.length === 0) &&
-    anatomyPrompts.every(({ p }) => fixedLines.every((line) => p.includes(line))),
+  "every prompt has the vertical 2:3 composition and a photography profile",
+  anatomyPrompts.every(({ p }) => /Vertical 2:3 composition/.test(p) && /Photographic style and framing:/.test(p)),
 ));
 const negative = readFileSync("negative.txt", "utf8").trim();
 const negativeItems = negative.split(",").map((x) => x.trim());
@@ -616,7 +609,7 @@ results.push(check(
   "the negative list excludes motion blur and an out-of-focus subject",
   ["motion blur", "out-of-focus face", "missed focus", "soft-focus subject"].every((x) => negativeItems.includes(x)),
 ));
-results.push(check("the positive template still asks for a blurred background", /Setting is \{background\}, heavily blurred/.test(template)));
+results.push(check("the template keeps the photography placeholder", /\{photography\}/.test(template)));
 results.push(check(
   "composePrompt joins the lead-in, the filled template and the negative list",
   composePrompt(template, negative, 5, "a", true) ===

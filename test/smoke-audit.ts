@@ -111,6 +111,7 @@ export function runAudit(): void {
     "cli/export-prompts.ts": "writes the HTML page the user opens in a browser",
     "cli/import-images.ts": "reads the downloads the user hands it, and sorts their timestamps",
     "server/index.ts": "serves the built UI out of web/dist",
+    "core/qc.ts": "decodes image bytes with sharp and computes deterministic quality checks",
   };
   const reachesForFilesystem = (s: string) => /from\s+"node:(?:fs|path)"|from\s+"sharp"/.test(s);
 

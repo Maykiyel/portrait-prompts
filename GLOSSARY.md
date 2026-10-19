@@ -55,6 +55,14 @@ _Avoid_: original, source file
 A small cached copy of a Frame, used by the Gallery. Safe to delete; it is rebuilt on demand.
 _Avoid_: preview, thumb, resize
 
+**Quality flag**:
+A label a Quality check attaches to a Frame, such as `near_blank`, `extreme_luminance_low`, `material_crop`, `aspect_ratio_mismatch`, `duplicate_exact`, `duplicate_perceptual`, or `face_detector_not_run`. Flags describe a possible problem; they do not by themselves remove a Frame.
+_Avoid_: defect, issue
+
+**Quarantine**:
+The place unaccepted Frame bytes are kept, under `out/quarantine/`. A Frame that fails decoding or a quality check is quarantined instead of written into the archive, and its Manifest row marks it as failed and quarantined, with its quarantine path.
+_Avoid_: rejected, discarded
+
 ### Prompts
 
 **Prompt**:
@@ -72,6 +80,18 @@ _Avoid_: version, template version
 **Attribute pool**:
 The ordered list of values one placeholder draws from. Entries are only ever added at the end, because inserting or reordering changes what old Seeds produce.
 _Avoid_: options, choices, variants, list
+
+**Ethnicity group**:
+One of eleven named groups of ethnicities, such as `europe` or `sub_saharan_africa`. A Portrait's ethnicity is chosen by picking a group with equal weight, then picking an ethnicity inside it, so small groups are not drowned out by large ones. Mixed portraits can carry two groups.
+_Avoid_: ethnicity family, region
+
+**Tone band**:
+A coarsened value for a visual trait. Skin tone bands are deep, medium_dark, medium, light, and very_light. Eye tone bands are dark, brown, hazel_amber, and light. Groups carry band weights, and mixed portraits average those weights across both groups.
+_Avoid_: skin tone, color band
+
+**Photography profile**:
+One of six profiles in the photography pool, such as `professional_headshot` or `low_light_portrait`. It controls allowed background settings and lighting, and its description fills the `{photography}` placeholder.
+_Avoid_: photo style, camera profile
 
 **Negative list**:
 The things to avoid. No provider has a negative-prompt field, so it goes into the Prompt as an "Avoid:" line.

@@ -14,7 +14,9 @@
     "generate": "tsx cli/generate.ts",
     "prompts": "tsx cli/export-prompts.ts",
     "import-images": "tsx cli/import-images.ts",
-    "status": "tsx cli/status.ts"
+    "status": "tsx cli/status.ts",
+    "dataset-audit": "tsx cli/dataset-audit.ts",
+    "dataset-audit": "tsx cli/dataset-audit.ts"
   },
   "devDependencies": {
     "@babel/core": "^8.0.6",
