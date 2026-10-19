@@ -5,11 +5,12 @@ import type { ReadStream } from "node:fs";
 import sharp from "sharp";
 import { ArchiveError, FrameQuarantined, type ArchiveErrorCode } from "./errors";
 import { buildPrompt, composePrompt, samplePortrait, samplerHash, templateHash } from "./sampler";
-import { qc, type QCResult, type QcFlag, type QcStatus } from "./qc";
+import { qc, rollUpStatus, type QCResult, type QcFlag, type QcStatus } from "./qc";
+import { PHASH_ALGO, PHASH_THRESHOLD, checkDuplicates, perceptualHash, type IndexedArtifact } from "./duplicates";
 import { readRow, sampledPortrait } from "./manifest-reader";
 import type {
   AttributesSource, DuplicateRecord, FrameSource, GenerationParams, GenerationStatus,
-  ImageDigest, IngestQuarantine, ManifestRow, NormalizedDigest, ReviewReason, ReviewState, SampledPortrait,
+  ImageDigest, IngestQuarantine, ManifestRow, NormalizedDigest, ReviewQuarantine, ReviewReason, ReviewState, SampledPortrait,
   SchemaVersion, SeedState,
 } from "./manifest-types";
 
@@ -129,6 +130,7 @@ export type FrameWrite = {
   attributesSource?: AttributesSource;
   params?: GenerationParams | null;
   ts?: string;
+  phashThreshold?: number;
 };
 
 /** One generation or import attempt, as the caller reports it. */
@@ -170,7 +172,7 @@ export type OutputFolder = Readonly<{
   readQuarantinedFrame(seed: number): ReadStream;
   readThumbnail(seed: number, width: number): Promise<ReadStream>;
   writeFrame(frame: FrameWrite): Promise<void>;
-  importFrames(files: FileForImport[], seeds: number[]): Promise<ImportedFrame[]>;
+  importFrames(files: FileForImport[], seeds: number[], phashThreshold?: number): Promise<ImportedFrame[]>;
   acceptFrame(seed: number, note?: string): void;
   rejectFrame(seed: number, reason: ReviewReason, note?: string): void;
   recordAttempt(attempt: GenerationRecord): void;
@@ -637,6 +639,90 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     }
   };
 
+  /**
+   * Builds the duplicate index from the archive's rows and the files on disk.
+   *
+   * It never reads the manifest itself; the rows come from `readManifest`, which
+   * is the one reader. Artifacts that have no stored hash are hashed from disk
+   * in memory, and no backfill row is written for them. An artifact that cannot
+   * be hashed at all carries an `uncomparableReason` and is reported as such by
+   * the check rather than being silently skipped.
+   */
+  const buildDuplicateIndex = async (): Promise<IndexedArtifact[]> => {
+    const artifacts: IndexedArtifact[] = [];
+    for (const [seed, state] of latestBySeed()) {
+      // Archive frame.
+      if (state.generation?.status === "ok" && hasFrame(seed)) {
+        let rawHash = state.generation.raw?.sha256;
+        let normalizedHash = state.generation.normalized?.sha256;
+        let perceptual: { algo: string; hex: string } | undefined =
+          state.generation.qc?.perceptual?.algo === PHASH_ALGO && state.generation.qc.perceptual.hex
+            ? { algo: state.generation.qc.perceptual.algo, hex: state.generation.qc.perceptual.hex }
+            : undefined;
+        let reason: string | undefined;
+        if (!rawHash && existsSync(rawFile(seed))) {
+          try { rawHash = sha256(readFileSync(rawFile(seed))); } catch { reason = "unreadable file"; }
+        }
+        if (!normalizedHash && existsSync(frameFile(seed))) {
+          try { normalizedHash = sha256(readFileSync(frameFile(seed))); } catch { reason = reason ?? "unreadable file"; }
+        }
+        if (!perceptual) {
+          let buf: Buffer | null = null;
+          if (existsSync(frameFile(seed))) { try { buf = readFileSync(frameFile(seed)); } catch { buf = null; } }
+          else if (existsSync(rawFile(seed))) { try { buf = readFileSync(rawFile(seed)); } catch { buf = null; } }
+          if (buf) {
+            try { perceptual = { algo: PHASH_ALGO, hex: await perceptualHash(buf) }; } catch { reason = reason ?? "undecodable image"; }
+          } else {
+            reason = reason ?? "missing file";
+          }
+        }
+        const comparable = !!(rawHash || normalizedHash || perceptual);
+        artifacts.push({ seed, where: "archive", rawHash, normalizedHash, perceptual, uncomparableReason: comparable ? undefined : (reason ?? "no hashes") });
+      }
+      // Ingestion quarantine.
+      const gq = state.generation?.quarantine;
+      if (gq && "path" in gq) {
+        const q = gq as IngestQuarantine;
+        let rawHash = state.generation?.raw?.sha256;
+        let perceptual: { algo: string; hex: string } | undefined =
+          state.generation?.qc?.perceptual?.algo === PHASH_ALGO && state.generation?.qc?.perceptual?.hex
+            ? { algo: state.generation.qc.perceptual.algo, hex: state.generation.qc.perceptual.hex }
+            : undefined;
+        let reason: string | undefined;
+        if (existsSync(q.path)) {
+          if (!rawHash) { try { rawHash = sha256(readFileSync(q.path)); } catch { reason = "unreadable file"; } }
+          if (!perceptual) { try { perceptual = { algo: PHASH_ALGO, hex: await perceptualHash(readFileSync(q.path)) }; } catch { reason = reason ?? "undecodable image"; } }
+        } else {
+          reason = "missing file";
+        }
+        const comparable = !!(rawHash || perceptual);
+        artifacts.push({ seed, where: "quarantine", rawHash, perceptual, uncomparableReason: comparable ? undefined : (reason ?? "no hashes") });
+      }
+      // Review quarantine.
+      const rq = state.review?.quarantine;
+      if (rq && typeof rq === "object" && "frame" in rq) {
+        const q = rq as ReviewQuarantine;
+        let rawHash: string | undefined;
+        let normalizedHash: string | undefined;
+        let perceptual: { algo: string; hex: string } | undefined;
+        let reason: string | undefined;
+        if (existsSync(q.frame)) {
+          try { normalizedHash = sha256(readFileSync(q.frame)); perceptual = { algo: PHASH_ALGO, hex: await perceptualHash(readFileSync(q.frame)) }; } catch { reason = "undecodable image"; }
+        } else {
+          reason = "missing file";
+        }
+        if (existsSync(q.raw)) {
+          try { rawHash = sha256(readFileSync(q.raw)); } catch { reason = reason ?? "unreadable file"; }
+        } else if (!rawHash) {
+          reason = reason ?? "missing file";
+        }
+        const comparable = !!(rawHash || normalizedHash || perceptual);
+        artifacts.push({ seed, where: "quarantine", rawHash, normalizedHash, perceptual, uncomparableReason: comparable ? undefined : (reason ?? "no hashes") });
+      }
+    }
+    return artifacts;
+  };
+
   const writeFrame = async (frame: FrameWrite): Promise<void> => {
     validateSeed(frame.seed);
     const counter = readCounter();
@@ -691,6 +777,38 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     // bytes it was cut from.
     const quality = await qc(rawBytes, normalizedBytes ? { normalized: normalizedBytes } : {});
 
+    // Duplicate check: a synchronous step after hashing and before any awaited
+    // disk write, so two concurrent workers cannot both pass as the first of an
+    // identical pair. The threshold can be overridden by the caller.
+    const threshold = frame.phashThreshold ?? PHASH_THRESHOLD;
+    const candidatePerceptual = quality.perceptual.hex
+      ? { algo: quality.perceptual.algo, hex: quality.perceptual.hex }
+      : undefined;
+    const dupIndex = await buildDuplicateIndex();
+    const dupResult = checkDuplicates(
+      { rawHash: raw.sha256, normalizedHash: normalized?.sha256, perceptual: candidatePerceptual },
+      dupIndex,
+      threshold,
+    );
+    quality.checks.duplicate_exact = dupResult.exact.length > 0 ? "fail" : "pass";
+    quality.checks.duplicate_perceptual = dupResult.perceptual.length > 0 ? "warn" : "pass";
+    if (dupResult.uncomparable.length > 0) {
+      if ((quality.checks as Record<string, string>).duplicate_exact !== "fail") (quality.checks as Record<string, string>).duplicate_exact = "warn";
+      if ((quality.checks as Record<string, string>).duplicate_perceptual !== "fail") (quality.checks as Record<string, string>).duplicate_perceptual = "warn";
+    }
+    if (dupResult.exact.length > 0 && !quality.flags.includes("duplicate_exact")) quality.flags.push("duplicate_exact");
+    if (dupResult.perceptual.length > 0 && !quality.flags.includes("duplicate_perceptual")) quality.flags.push("duplicate_perceptual");
+    if (dupResult.uncomparable.length > 0 && !quality.flags.includes("duplicate_check_incomplete")) quality.flags.push("duplicate_check_incomplete");
+    quality.status = rollUpStatus(quality.checks);
+
+    const duplicateRecord = {
+      algo: PHASH_ALGO,
+      threshold,
+      exact: dupResult.exact,
+      perceptual: dupResult.perceptual,
+      uncomparable: dupResult.uncomparable,
+    };
+
     // Any check that fails sends the Frame to quarantine rather than the archive.
     // That is the whole of the rule: a Frame whose status is `fail` is not a Frame
     // this dataset keeps, whether it failed because the bytes would not decode,
@@ -711,6 +829,7 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
         status: "failed",
         raw,
         qc: quality,
+        duplicates: duplicateRecord,
         error: `qc: ${reason}`,
         quarantine: { path: destination, reason },
       });
@@ -726,10 +845,10 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
     // fixed size by definition and carries no such claim.
     writeFileSync(rawFile(frame.seed), rawBytes);
     writeFileSync(frameFile(frame.seed), normalizedBytes as Buffer);
-    recordAttempt({ ...provenance, status: "ok", raw, normalized, qc: quality });
+    recordAttempt({ ...provenance, status: "ok", raw, normalized, qc: quality, duplicates: duplicateRecord });
   };
 
-  const importFrames = async (files: FileForImport[], seeds: number[]): Promise<ImportedFrame[]> => {
+  const importFrames = async (files: FileForImport[], seeds: number[], phashThreshold?: number): Promise<ImportedFrame[]> => {
     const counter = readCounter();
     assertSalt(counter);
     if (!files.length || files.length !== seeds.length)
@@ -759,6 +878,7 @@ export function openOutputFolder(root: string, salt: string): OutputFolder {
           file: file.name,
           attributesSource: "import",
           params: null,
+          phashThreshold,
           ts: new Date().toISOString(),
         });
         results.push({ seed, file: file.name, ok: true, warning });

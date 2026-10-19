@@ -90,7 +90,10 @@ export async function runStateChecks(): Promise<void> {
       [
         { name: "one.png", buffer: await good() },
         { name: "two.png", buffer: await squarePortrait() },
-        { name: "four.png", buffer: await good() },
+        { name: "four.png", buffer: await (async () => {
+            const base = await good();
+            return sharp(base).composite([{ input: Buffer.from('<svg width="848" height="1264"><rect x="10" y="10" width="40" height="40" fill="#ff0000"/></svg>'), top: 0, left: 0 }]).png().toBuffer();
+          })() },
       ],
       [1, 2, 4],
     );

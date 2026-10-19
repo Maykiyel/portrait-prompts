@@ -101,7 +101,13 @@ const apiRequest = (over: Partial<RunRequest>, generate: Generator = good): RunR
   generate,
   ...over,
 });
-const apiRun = async (over: Partial<RunRequest>, generate: Generator = good) => {
+let smokeDistinctCounter = 0;
+const smokeDistinctGood = async () => {
+  const base = await good();
+  const i = smokeDistinctCounter++;
+  return sharp(base).composite([{ input: Buffer.from(`<svg width="848" height="1264"><rect x="${(i * 37) % 800}" y="${(i * 53) % 1200}" width="24" height="24" fill="#00ff00"/></svg>`), top: 0, left: 0 }]).png().toBuffer();
+};
+const apiRun = async (over: Partial<RunRequest>, generate: Generator = smokeDistinctGood) => {
   const events: ProgressEvent[] = [];
   const result = await run({ ...apiRequest(over, generate), onEvent: (event) => events.push(event) });
   return { events, result };
@@ -223,12 +229,12 @@ for (const [i, name] of ["b.png", "a.png"].entries()) {
   // carries structure, because a flat fill fails the near_blank check and a frame
   // that fails is quarantined rather than imported.
   await sharp({
-    create: { width: 1024, height: 1024, channels: 3, background: "#a67a7a" },
+    create: { width: 1024, height: 1024, channels: 3, background: name === "a.png" ? "#a67a7a" : "#7a8fa6" },
   })
     .composite([{
       input: Buffer.from(
         '<svg width="1024" height="1024">' +
-        '<rect width="1024" height="1024" fill="#8d6464"/>' +
+        '<rect width="1024" height="1024" fill="' + (name === "a.png" ? "#8d6464" : "#648d8d") + '"/>' +
         '<circle cx="512" cy="400" r="260" fill="#d9b394"/>' +
         '<rect x="180" y="700" width="664" height="324" fill="#4a3b3b"/>' +
         '<rect x="400" y="330" width="80" height="38" fill="#241d1d"/>' +
@@ -704,7 +710,7 @@ try {
   const img = await good();
   // Bytes that travel unchanged even after a resize: used to prove the raw path
   // is verbatim rather than re-encoded, by tacking on a byte sharp will drop.
-  const imgPlusJunk = Buffer.concat([img, Buffer.from([0x42])]);
+  const imgPlusJunk = Buffer.concat([await smokeDistinctGood(), Buffer.from([0x42])]);
   const imports = await folder.importFrames(
     [{ name: "corrupt.png", buffer: Buffer.from("bad") }, { name: "good.png", buffer: img }], [1, 2],
   );
@@ -800,7 +806,7 @@ try {
   const seeded = openOutputFolder(routeDir, "route-salt");
   seeded.issueSeeds(3); // Seeds 1 to 3 are waiting
   await seeded.importFrames([{ name: "one.png", buffer: await good() }], [1]);
-  const api = createApp({ outDir: routeDir, salt: "route-salt" }, withGenerators({ gemini: good }));
+  const api = createApp({ outDir: routeDir, salt: "route-salt" }, withGenerators({ gemini: smokeDistinctGood }));
   // A route that raises each code with a message nobody would ever write, so the
   // status can only have come from the code.
   for (const code of codes)
@@ -865,7 +871,7 @@ try {
       .request("/api/prompts/pending")).status === STATUS_BY_CODE["salt-mismatch"]));
 
   const partial = await images(
-    [{ name: "corrupt.png", buffer: Buffer.from("not an image") }, { name: "three.png", buffer: await good() }], [2, 3],
+    [{ name: "corrupt.png", buffer: Buffer.from("not an image") }, { name: "three.png", buffer: await smokeDistinctGood() }], [2, 3],
   );
   const perFile = (await partial.json()) as { results: { seed: number; ok: boolean }[] };
   results.push(check("one corrupt download still answers per file, and the other Frame lands",
@@ -1003,7 +1009,7 @@ const policySpy = () => {
     // calls in flight is the number of workers rather than a race.
     await new Promise((resolve) => setTimeout(resolve, 5));
     calls.inFlight--;
-    return good();
+    return smokeDistinctGood();
   };
   return { seen, calls, generate };
 };
@@ -1170,7 +1176,7 @@ const held: Generator = async () => {
   for (let waited = 0; !gate.open && waited < 5000; waited += 10) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  return good();
+  return smokeDistinctGood();
 };
 // A Job asks the process whether an API key is set on every start, and nothing
 // else does; the fake Generator never uses one. Put back below.
@@ -1179,7 +1185,7 @@ try {
   // Fixture setup asks the module directly; every assertion below is an HTTP
   // response from an app.
   process.chdir(join(pairBase, "alpha-prompt-files"));
-  const alpha = createApp({ outDir: alphaDir, salt: "alpha" }, withGenerators({ gemini: good }));
+  const alpha = createApp({ outDir: alphaDir, salt: "alpha" }, withGenerators({ gemini: smokeDistinctGood }));
   const alphaFolder = openOutputFolder(alphaDir, "alpha");
   alphaFolder.issueSeeds(2);
   await alphaFolder.importFrames([{ name: "alpha.png", buffer: await good() }], [1]);

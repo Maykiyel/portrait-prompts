@@ -251,6 +251,40 @@ export function hammingBits(a: string, b: string): number {
  * reported as a near duplicate of something. A caller that has to handle this is
  * the one that owns the uncomparable list; this module only says which case it is.
  */
+export type IndexedArtifact = {
+  seed: number;
+  where: "archive" | "quarantine";
+  rawHash?: string;
+  normalizedHash?: string;
+  perceptual?: StoredPerceptualHash;
+  uncomparableReason?: string;
+};
+
+export function checkDuplicates(
+  candidate: { rawHash?: string; normalizedHash?: string; perceptual?: StoredPerceptualHash },
+  index: IndexedArtifact[],
+  threshold: number,
+): { exact: { seed: number; where: "archive" | "quarantine"; kind: "raw" | "normalized" }[]; perceptual: { seed: number; where: "archive" | "quarantine"; distance: number }[]; uncomparable: { seed: number; reason: string }[] } {
+  const exact: { seed: number; where: "archive" | "quarantine"; kind: "raw" | "normalized" }[] = [];
+  const perceptual: { seed: number; where: "archive" | "quarantine"; distance: number }[] = [];
+  const uncomparable: { seed: number; reason: string }[] = [];
+  for (const art of index) {
+    if (art.uncomparableReason) {
+      uncomparable.push({ seed: art.seed, reason: art.uncomparableReason });
+      continue;
+    }
+    if (candidate.rawHash && art.rawHash && candidate.rawHash === art.rawHash)
+      exact.push({ seed: art.seed, where: art.where, kind: "raw" });
+    if (candidate.normalizedHash && art.normalizedHash && candidate.normalizedHash === art.normalizedHash)
+      exact.push({ seed: art.seed, where: art.where, kind: "normalized" });
+    if (candidate.perceptual && art.perceptual) {
+      const d = distanceBits(candidate.perceptual, art.perceptual);
+      if (d !== null && d <= threshold) perceptual.push({ seed: art.seed, where: art.where, distance: d });
+    }
+  }
+  return { exact, perceptual, uncomparable };
+}
+
 export function distanceBits(a: StoredPerceptualHash, b: StoredPerceptualHash): number | null {
   if (a.algo !== PHASH_ALGO || b.algo !== PHASH_ALGO) return null;
   if (!isPhashHex(a.hex) || !isPhashHex(b.hex)) return null;

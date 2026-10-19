@@ -19,6 +19,13 @@ const policy = policyFor(providers);
 import { providers } from "../core/providers";
 import { asyncCode, bad, captureOutput, check, good, promptFiles, repoRoot, results, streamBytes, withGenerators } from "./smoke-harness";
 
+let cliDistinctCounter = 0;
+const cliDistinctGood = async () => {
+  const base = await good();
+  const i = cliDistinctCounter++;
+  return sharp(base).composite([{ input: Buffer.from(`<svg width="848" height="1264"><rect x="${(i * 37) % 800}" y="${(i * 53) % 1200}" width="24" height="24" fill="#00ff00"/></svg>`), top: 0, left: 0 }]).png().toBuffer();
+};
+
 export async function runCliContract(): Promise<void> {
   const cliVersion = promptFiles().version;
   // A command run as a real process, so its argv parsing and exit code are exercised.
@@ -48,7 +55,7 @@ export async function runCliContract(): Promise<void> {
   const cliFolder = openOutputFolder(cliOut, "");
   cliFolder.issueSeeds(6);
   await cliFolder.writeFrame({ seed: 1, buffer: await good(), model: "fixture-model", prompt: cliFolder.promptFor(1, true) });
-  await cliFolder.writeFrame({ seed: 2, buffer: await good(), model: "fixture-model", prompt: cliFolder.promptFor(2, true) });
+  await cliFolder.writeFrame({ seed: 2, buffer: await sharp(await good()).composite([{ input: Buffer.from('<svg width="848" height="1264"><rect x="1" y="1" width="5" height="5" fill="#ff0000"/></svg>'), top: 0, left: 0 }]).png().toBuffer(), model: "fixture-model", prompt: cliFolder.promptFor(2, true) });
   cliFolder.recordAttempt({ seed: 3, status: "failed", error: "fixture failure" });
 
   // status: the same lines, and the same failed count as the module.
@@ -202,7 +209,7 @@ export async function runCliContract(): Promise<void> {
   ));
   // One worker, so the order of these lines is fixed rather than a race.
   const retryLines = await captureOutput(() =>
-    generateImages({ ...policy, count: 2, concurrency: 1, outDir: runOut, dryRun: false, salt: "" }, withGenerators({ gemini: good })));
+    generateImages({ ...policy, count: 2, concurrency: 1, outDir: runOut, dryRun: false, salt: "" }, withGenerators({ gemini: cliDistinctGood })));
   results.push(check(
     "the next run finishes Waiting Seeds first and does not advance the counter",
     retryLines.join("\n") === [
@@ -215,7 +222,7 @@ export async function runCliContract(): Promise<void> {
       runFolder.status().done === 2 && runFolder.status().failed === 1,
   ));
   const dryRunLines = await captureOutput(() =>
-    generateImages({ ...policy, count: 2, outDir: runOut, dryRun: true, salt: "" }, withGenerators({ gemini: good })),
+    generateImages({ ...policy, count: 2, outDir: runOut, dryRun: true, salt: "" }, withGenerators({ gemini: cliDistinctGood })),
   );
   results.push(check(
     "a dry run prints the Prompt, moves no counter and writes no Frame",
@@ -379,7 +386,7 @@ export async function runCliContract(): Promise<void> {
   results.push(check(
     "the run still refuses an unreadable counter instead of starting again",
     await asyncCode(() =>
-      generateImages({ ...policy, count: 1, outDir: cliOut, dryRun: true, salt: "" }, withGenerators({ gemini: good }))) ===
+      generateImages({ ...policy, count: 1, outDir: cliOut, dryRun: true, salt: "" }, withGenerators({ gemini: cliDistinctGood }))) ===
       "unreadable-counter",
   ));
 

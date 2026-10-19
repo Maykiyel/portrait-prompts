@@ -77,6 +77,20 @@ const fixtureRoot = (): string =>
 
 // One request for every generation run below, so the provenance a row records is
 // the provenance of a named Provider rather than a default nothing chose.
+let distinctCounter = 0;
+const distinctGood = async () => {
+  const base = await good();
+  const i = distinctCounter++;
+  return sharp(base)
+    .composite([{
+      input: Buffer.from(`<svg width="848" height="1264"><rect x="${(i * 37) % 800}" y="${(i * 53) % 1200}" width="24" height="24" fill="#00ff00"/></svg>`),
+      top: 0,
+      left: 0,
+    }])
+    .png()
+    .toBuffer();
+};
+
 const RUN = {
   concurrency: 1,
   maxConcurrency: 4,
@@ -85,7 +99,7 @@ const RUN = {
   aspectRatio: "2:3",
   imageSize: "1K",
   useNegative: true,
-  generate: good,
+  generate: distinctGood,
 };
 
 /**
@@ -392,9 +406,9 @@ export async function runManifestChecks(): Promise<void> {
     const galleryDir = join(base, "gallery");
     const gallery = openOutputFolder(galleryDir, SALT);
     gallery.issueSeeds(50);
-    const frameBytesFor = await good();
+    const frameBytesForAll = await Promise.all(Array.from({ length: 50 }, () => distinctGood()));
     await gallery.importFrames(
-      Array.from({ length: 50 }, (_, i) => ({ name: `download-${i}.png`, buffer: frameBytesFor })),
+      frameBytesForAll.map((buf, i) => ({ name: `download-${i}.png`, buffer: buf })),
       Array.from({ length: 50 }, (_, i) => i + 1),
     );
     const galleryApp = createApp({ outDir: galleryDir, salt: SALT }, withGenerators({ gemini: good }));

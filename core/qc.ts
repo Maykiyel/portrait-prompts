@@ -1,4 +1,5 @@
 import sharp from "sharp";
+import { perceptualHash, PHASH_ALGO } from "./duplicates";
 
 /**
  * The version stamped on every QC record. It changes when the shape of the
@@ -44,8 +45,7 @@ const EXTREME_LUMINANCE_HIGH = 239;
  * replaces it with the 16x16 gradient hash and moves this threshold to 12.
  * Changing it here would rewrite every hash already stored in an archive.
  */
-const PERCEPTUAL_HASH_SIZE = 8;
-const PERCEPTUAL_HASH_ALGO = "ahash-8x8-grayscale";
+const PERCEPTUAL_HASH_ALGO = PHASH_ALGO;
 
 /** The bit distance at which two perceptual hashes are called near duplicates. */
 export const PERCEPTUAL_FINGERPRINT_THRESHOLD = 10;
@@ -189,24 +189,9 @@ function statsOf(greyscale: Buffer): QcStats {
   return { mean, stdDev: Math.sqrt(varianceSum / greyscale.length) };
 }
 
-/** The 8x8 average hash, unchanged from the phase this ticket lands in. */
+/** The perceptual hash, now the 16x16 damped gradient hash from core/duplicates.ts. */
 async function computePerceptualHash(buffer: Buffer): Promise<string> {
-  const raw = await sharp(buffer)
-    .resize(PERCEPTUAL_HASH_SIZE, PERCEPTUAL_HASH_SIZE, { fit: "fill" })
-    .greyscale()
-    .raw()
-    .toBuffer();
-  const count = raw.length || 1;
-  let sum = 0;
-  for (const value of raw) sum += value;
-  const average = sum / count;
-  let bits = "";
-  for (const value of raw) bits += value >= average ? "1" : "0";
-  let hex = "";
-  for (let i = 0; i < bits.length; i += 4) {
-    hex += parseInt(bits.slice(i, i + 4).padEnd(4, "0"), 2).toString(16);
-  }
-  return hex;
+  return perceptualHash(buffer);
 }
 
 /**
@@ -245,7 +230,7 @@ export function hammingDistance(a: string, b: string): number {
  * then a clean pass. A check that did not run never pulls the status down, so
  * the record says `not_run` only when nothing ran at all.
  */
-function rollUpStatus(checks: QcChecks): QcStatus {
+export function rollUpStatus(checks: QcChecks): QcStatus {
   const states = Object.values(checks);
   if (states.includes("fail")) return "fail";
   if (states.includes("warn")) return "warn";
