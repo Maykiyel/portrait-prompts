@@ -80,7 +80,7 @@ A label a Quality check attaches to a Frame, such as `near_blank`, `extreme_lumi
 _Avoid_: defect, issue
 
 **Not run**:
-The state of a Quality check that did not happen. It is not a pass. No face detector runs here, so `face_presence` is `not_run` on every Frame, and duplicate detection is not built yet, so `duplicate_exact` and `duplicate_perceptual` are `not_run` on every Frame too.
+The state of a Quality check that did not happen. It is not a pass. No face detector runs here, so `face_presence` is `not_run` on every Frame. `duplicate_exact` and `duplicate_perceptual` are `not_run` only when the duplicate check did not run; otherwise they are `pass`, `warn` or `fail`.
 _Avoid_: skipped, skipped as fine, silently passed
 
 **Raw hash**:
@@ -92,8 +92,17 @@ The sha256 of the exact bytes written to the Frame file. The artifact is built o
 _Avoid_: frame hash, thumb hash, resized hash
 
 **Quarantine**:
-The place unaccepted Frame bytes are kept, under `out/quarantine/`. A Frame whose bytes will not decode, or that reports zero dimensions, is quarantined instead of written into the archive, and its Manifest row marks it as failed and quarantined, with its quarantine path. A Rejection is a decision and is not the same thing.
+The place unaccepted Frame bytes are kept, under `out/quarantine/`. A Frame whose bytes will not decode, or that reports zero dimensions, or that is an exact duplicate, is quarantined at ingestion instead of written into the archive, and its Manifest row marks it as failed and quarantined, with its quarantine path. A Frame moved aside by a Rejection is also kept here, byte-identical, under `NNNNN-<rawhash8>.png` and `raw/NNNNN-<rawhash8>.png`. A Rejection is a decision and is not the same thing as an ingestion quarantine.
 _Avoid_: rejected, discarded
+
+**Review status**:
+What a person decided about a Frame: `unreviewed` when no decision has been made, `accepted` or `rejected`. It is a separate row from the generation row, so a Rejection never rewrites an Attempt. Accepting a Frame whose Quality status is `fail` is refused. Accepting a Frame whose Quality status is `not_run` is allowed.
+
+**Exact duplicate**:
+A Frame whose raw or normalized hash matches an archived or quarantined Frame. It is a `fail` on `duplicate_exact` and is quarantined at ingestion, with the matching Seed and location recorded. A perceptual candidate never rejects anything.
+
+**Perceptual candidate**:
+A Frame whose perceptual hash is within the threshold of an archived or quarantined Frame. It is a `warn` on `duplicate_perceptual` and is accepted into the archive, with each match's Seed, location and distance recorded. It never auto-rejects a Frame.
 
 ### Prompts
 

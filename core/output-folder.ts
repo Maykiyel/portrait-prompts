@@ -199,6 +199,119 @@ const pad = (seed: number) => String(seed).padStart(5, "0");
  */
 export const seedLabel = (seed: number) => pad(seed);
 
+export type AuditRowDiagnostic = { line: number; message: string };
+
+export type AuditView = {
+  version: string;
+  counter: { next: number; salt: string } | undefined;
+  counterError?: string;
+  rows: ManifestRow[];
+  diagnostics: AuditRowDiagnostic[];
+  frames: FrameRecord[];
+  quarantineFiles: string[];
+};
+
+/**
+ * A read-only view of an archive, for reporting rather than for writing.
+ *
+ * It never asserts the salt and never creates a file, so an audit that runs over
+ * a folder with a changed salt reports the mismatch instead of refusing to run,
+ * and a run over a clean folder leaves it byte-identical. A line that is not a
+ * row is returned as a diagnostic with its line number rather than aborting the
+ * read, so the rest of the archive is still reported.
+ */
+export function readArchive(root: string): AuditView {
+  let version = "unversioned";
+  try {
+    const rawTemplate = readFileSync("template.txt", "utf8");
+    version = rawTemplate.match(/^#\\s*(.+)\\n/)?.[1]?.trim() ?? "unversioned";
+  } catch {
+    version = "unversioned";
+  }
+
+  let counter: { next: number; salt: string } | undefined;
+  let counterError: string | undefined;
+  const counterFile = join(root, "cursor.json");
+  if (existsSync(counterFile)) {
+    try {
+      const parsed = JSON.parse(readFileSync(counterFile, "utf8")) as { next?: unknown; salt?: unknown };
+      if (parsed && Number.isSafeInteger(parsed.next) && (parsed.next as number) >= 1) {
+        counter = { next: parsed.next as number, salt: typeof parsed.salt === "string" ? parsed.salt : "" };
+      } else {
+        counterError = "invalid counter";
+      }
+    } catch (err) {
+      counterError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  const manifestFile = join(root, "manifest.jsonl");
+  const rows: ManifestRow[] = [];
+  const diagnostics: AuditRowDiagnostic[] = [];
+  if (existsSync(manifestFile)) {
+    const lines = readFileSync(manifestFile, "utf8").split("\\n");
+    let lineNumber = 0;
+    for (const line of lines) {
+      lineNumber++;
+      if (line.trim() === "") continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch (err) {
+        diagnostics.push({ line: lineNumber, message: err instanceof Error ? err.message : String(err) });
+        continue;
+      }
+      const row = readRow(parsed);
+      if (!row) {
+        diagnostics.push({ line: lineNumber, message: "not a valid manifest row" });
+        continue;
+      }
+      rows.push(row);
+    }
+  }
+
+  // Frames: read off disk, the way listFrames does, without any salt assertion.
+  const frameSeeds = existsSync(root)
+    ? readdirSync(root)
+        .map((name) => name.match(/^(\\d{5})\\.png$/)?.[1])
+        .filter((m): m is string => !!m)
+        .map(Number)
+        .sort((a, b) => b - a)
+    : [];
+  const latest = new Map<number, { generation?: ManifestRow; review?: ManifestRow }>();
+  for (const row of rows) {
+    const state = latest.get(row.seed) ?? {};
+    if (row.review !== undefined) state.review = row;
+    else if (row.status !== undefined) state.generation = row;
+    latest.set(row.seed, state);
+  }
+  const frameFile = (seed: number) => join(root, `${pad(seed)}.png`);
+  const frames: FrameRecord[] = frameSeeds.map((seed) => {
+    const state = latest.get(seed);
+    const row = state && state.review?.review !== "rejected" && state.generation?.status === "ok" ? state.generation : undefined;
+    return {
+      seed,
+      version: row?.version ?? "unknown",
+      source: row?.source ?? "unknown",
+      provider: row?.provider ?? undefined,
+      model: row?.model ?? undefined,
+      prompt: row?.prompt ?? "",
+      updatedAt: existsSync(frameFile(seed)) ? statSync(frameFile(seed)).mtime.toISOString() : new Date().toISOString(),
+      ...(row?.primaryGroup === undefined ? {} : { primaryGroup: row.primaryGroup }),
+      ...(row?.photographyProfile === undefined ? {} : { photographyProfile: row.photographyProfile }),
+      ...(row?.qc === undefined ? {} : { qcStatus: row.qc.status, flags: row.qc.flags }),
+      reviewState: (state?.review?.review === "accepted" ? "accepted" : state?.review?.review === "rejected" ? "rejected" : "unreviewed"),
+    };
+  });
+
+  const quarantineDirPath = join(root, "quarantine");
+  const quarantineFiles = existsSync(quarantineDirPath)
+    ? readdirSync(quarantineDirPath).sort()
+    : [];
+
+  return { version, counter, counterError, rows, diagnostics, frames, quarantineFiles };
+}
+
 /**
  * The Seeds named with --start. The module only hands a Frame to a
  * waiting Seed, so a command over Seeds the counter never issued asks

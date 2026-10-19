@@ -96,7 +96,7 @@ Every prompt comes from a seed. A counter in `out/cursor.json` hands seeds out i
 - `out/raw/00001.png` is the untouched original.
 - `out/cursor.json` holds the seed counter and the salt it was started with.
 - `out/thumbs/` holds gallery thumbnails. It is safe to delete.
-- `out/quarantine/` holds the bytes of Frames refused as they arrived, kept exactly as they arrived. See the quality record below for the only condition that puts a Frame there.
+- `out/quarantine/` holds bytes refused as they arrived (under `NNNNN-<rawhash8>.png`) and Frames moved aside by a rejection (under `NNNNN-<rawhash8>.png` and `raw/NNNNN-<rawhash8>.png`). Rejected Frames are byte-identical to before and their stored hashes stay valid. See the review and quality sections below.
 
 ### The Manifest
 
@@ -113,7 +113,7 @@ Two hashes cover the bytes:
 
 `primaryGroup` is the group the first ethnicity draw chose. It is stored separately from `groups`, and `groups` keeps the order the ethnicities are named in, so a mixed Portrait that names its second ethnicity first still records the group the draw started from.
 
-The remaining fields: `params` is `{ aspectRatio, imageSize, useNegative }` on an api row and `null` on a manual one. `templateHash` and `samplerHash` are the first 12 hex characters of the sha256 of the template text and of the sampler's definition tables, so a reader can tell which text and which tables built a Frame. `qc` is the quality record below. `duplicates` is absent, because duplicate detection does not run yet. `quarantine` holds the path and the reason for a Frame refused at ingestion.
+The remaining fields: `params` is `{ aspectRatio, imageSize, useNegative }` on an api row and `null` on a manual one. `templateHash` and `samplerHash` are the first 12 hex characters of the sha256 of the template text and of the sampler's definition tables, so a reader can tell which text and which tables built a Frame. `qc` is the quality record below. `duplicates` is `{ algo, threshold, exact, perceptual, uncomparable }`: the algorithm and threshold used, the exact matches, the perceptual candidates, and any artifacts that could not be compared. `quarantine` holds the path and the reason for a Frame refused at ingestion.
 
 An absent key means unknown. `null` means recorded as not applicable. The string `"unknown"` is never written.
 
@@ -130,7 +130,7 @@ The flags are `decode_failed`, `zero_dimensions`, `near_blank`, `extreme_luminan
 Two checks do not run, and neither has a flag:
 
 - `face_presence` is `not_run` on every Frame. No face detector runs in this repo, so nothing about a face is measured or claimed.
-- `duplicate_exact` and `duplicate_perceptual` are `not_run` on every Frame. Duplicate detection is not built yet, so no Frame is compared against any other at write time and the three duplicate flags are never written. The `perceptual.hex` fingerprint is still recorded, and the audit CLI recomputes the same fingerprint when it reports near-duplicates of its own.
+- `duplicate_exact` and `duplicate_perceptual` run on every Frame. An exact match on the raw or normalized hash is a `fail` and sends the Frame to quarantine with the matching Seed and location recorded. A perceptual match within the threshold is a `warn`: the Frame is accepted into the archive, never auto-rejected, and the match is recorded. When an artifact could not be compared, the check is `warn` with `duplicate_check_incomplete` and the Frame is never reported as clean. The perceptual hash is the 16x16 damped gradient hash (256 bits), and the threshold defaults to 12 bits.
 
 A Frame whose bytes will not decode, or that reports zero dimensions, is not written into the archive. Its bytes go to `out/quarantine/` and exactly one row records the Attempt, with the `quarantine` path and the reason. Every other outcome is accepted and flagged. Review status is separate from generation status: a Rejected Seed returns to waiting, and an accepted Frame stays in `out/`.
 
@@ -264,11 +264,13 @@ The root holds configuration and the two Prompt files, not code: `template.txt` 
 
 ## Downstream dataset use
 
-A dataset is built from accepted Frames only, meaning files present in `out/`. Rejected Seeds leave no file and quarantine files were never accepted.
+A dataset is built from accepted Frames only, meaning files present in `out/`. Rejected Seeds leave no file and quarantine files were never accepted. Unreviewed Frames passed the ingestion checks but no person looked at them; accepted Frames were reviewed by a person. No face detector runs in this repo, and nothing here claims anything about detector performance.
+
+The audit CLI (`pnpm dataset-audit`) is read-only: it writes nothing, and the folder is byte-identical before and after a run. Exit codes: 0 when no integrity problems were found, 1 when integrity problems were found, 2 when the folder cannot be read at all. A salt mismatch is reported as information and does not change the exit code. Flags: `--dir`, `--min-cell`, `--json`, `--phash-threshold`. The report carries `auditVersion` and a single timestamp.
 
 - Filter by prompt version before comparing or training. Mixed versions in one dataset confuse both counting and training.
 - Use `pnpm run dataset-audit -- --dir out` to check gender, primary ethnicity group, mixed status, skin band, eye band, age band, photography profile, optional detail counts, duplicates, QC flags, sparse cells, and legacy rows.
-- Treat QC flags as data quality signals. `aspect_ratio_mismatch` often means a free-app image was not 2:3 and was cropped. `near_blank` and the two `extreme_luminance` flags mark a frame with almost no detail or an implausible brightness. The duplicate flags are never written yet, because no duplicate check runs at write time; use `npm run dataset-audit` if you want near-duplicates reported.
+- Treat QC flags as data quality signals. `aspect_ratio_mismatch` often means a free-app image was not 2:3 and was cropped. `near_blank` and the two `extreme_luminance` flags mark a frame with almost no detail or an implausible brightness. `duplicate_exact` means the Frame is byte-identical to an archived or quarantined Frame and was quarantined at ingestion. `duplicate_perceptual` means it is a near-duplicate candidate: it was accepted, and a person should look at it. `duplicate_check_incomplete` means one of the compared artifacts could not be read, so the check is a warning rather than a pass.
 - Do not include files under `out/quarantine/` in a dataset. They are the bytes of frames that would not decode or reported zero dimensions.
 - Keep one salt per dataset. Switching salts mid-collection breaks traceability and changes every prompt.
 - Ethnicity group weights are synthetic controls for balance, not population statistics. Check audit counts before claiming coverage.

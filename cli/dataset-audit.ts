@@ -1,10 +1,11 @@
 import "dotenv/config";
 import { createHash } from "node:crypto";
-import { openOutputFolder, seedLabel } from "../core/output-folder";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import sharp from "sharp";
+import { readArchive, seedLabel } from "../core/output-folder";
 import type { ManifestRow } from "../core/output-folder";
-import { samplePortrait } from "../core/sampler";
-import { qc, hammingDistance, PERCEPTUAL_FINGERPRINT_THRESHOLD } from "../core/qc";
-
+import { distanceBits, PHASH_ALGO, PHASH_THRESHOLD } from "../core/duplicates";
 
 function arg(name: string, fallback?: string): string | undefined {
   const i = process.argv.indexOf(name);
@@ -17,390 +18,291 @@ function countOf(values: string[]): Record<string, number> {
   return out;
 }
 
-function sortedEntries(obj: Record<string, number>): Array<[string, number]> {
-  return Object.entries(obj).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-}
-
-function percent(n: number, total: number): string {
-  if (total <= 0) return "0.0%";
-  return `${((n / total) * 100).toFixed(1)}%`;
-}
-
-function toBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-    stream.on("end", () => resolve(Buffer.concat(chunks)));
-    stream.on("error", reject);
-  });
-}
-
-function latestStatuses(rows: ManifestRow[]): Map<number, ManifestRow> {
-  const latest = new Map<number, ManifestRow>();
-  for (const row of rows) latest.set(row.seed, row);
-  return latest;
-}
-
-/** The last row per Seed that was a generation or import attempt. A review row is a decision, not an attempt. */
-function latestGenerations(rows: ManifestRow[]): Map<number, ManifestRow> {
-  const latest = new Map<number, ManifestRow>();
-  for (const row of rows) if (row.status !== undefined) latest.set(row.seed, row);
-  return latest;
+function sha256File(path: string): string | undefined {
+  try {
+    return createHash("sha256").update(readFileSync(path)).digest("hex");
+  } catch {
+    return undefined;
+  }
 }
 
 async function run() {
-  const dir = arg("--dir", arg("--out", process.argv.slice(2).filter((a) => !a.startsWith("--") && a !== "--")[0] ?? "out"))!;
+  const dir = arg("--dir", arg("--out", process.argv.slice(2).filter((a) => !a.startsWith("--"))[0] ?? "out"))!;
   const json = process.argv.includes("--json");
-  const minCell = Number(arg("--min-cell", "5"));
+  void arg("--min-cell", "5");
+  const phashThreshold = Number(arg("--phash-threshold", String(PHASH_THRESHOLD)));
   const salt = (process.env.SEED_SALT ?? "").trim();
 
-  let folder;
-  try {
-    folder = openOutputFolder(dir, salt);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    const code = (error as { code?: string })?.code;
-    process.exit(code === "unreadable-counter" ? 1 : 0);
+  if (!existsSync(dir)) {
+    console.error(`Cannot read folder: ${dir}`);
+    process.exit(2);
     return;
   }
 
-  let rows: ManifestRow[] = [];
-  let manifestError: string | null = null;
-  try {
-    rows = folder.manifestRows();
-  } catch (error) {
-    manifestError = error instanceof Error ? error.message : String(error);
+  const view = readArchive(dir);
+  const rows = view.rows;
+  const diagnostics = view.diagnostics;
+  const frames = view.frames;
+  const quarantineFiles = view.quarantineFiles;
+
+  const reportTimestamp = new Date().toISOString();
+  const auditVersion = 1;
+
+  // Generation outcomes from latest generation row per Seed.
+  const latestGen = new Map<number, ManifestRow>();
+  for (const row of rows) if (row.status !== undefined) latestGen.set(row.seed, row);
+
+  const genStatusCounts = countOf([...latestGen.values()].map((r) => r.status ?? "unknown"));
+
+  // Review counts.
+  const reviewCounts = { unreviewed: 0, accepted: 0, rejected: 0 };
+  const latestReview = new Map<number, ManifestRow>();
+  for (const row of rows) if (row.review !== undefined) latestReview.set(row.seed, row);
+  const allSeeds = new Set([...latestGen.keys(), ...latestReview.keys()]);
+  for (const seed of allSeeds) {
+    const r = latestReview.get(seed);
+    if (!r) reviewCounts.unreviewed++;
+    else if (r.review === "accepted") reviewCounts.accepted++;
+    else if (r.review === "rejected") reviewCounts.rejected++;
   }
 
-  const frames = folder.listFrames();
-  const status = folder.status();
-  const currentVersion = status.version;
+  // Quarantine split.
+  const ingestQuarantine: number[] = [];
+  const reviewQuarantine: number[] = [];
+  for (const row of rows) {
+    if (row.quarantine && "path" in (row.quarantine as object) && "reason" in (row.quarantine as object)) ingestQuarantine.push(row.seed);
+  }
+  for (const row of rows) {
+    if (row.quarantine && "frame" in (row.quarantine as object)) reviewQuarantine.push(row.seed);
+  }
+  // dedupe
+  const ingestSet = [...new Set(ingestQuarantine)];
+  const reviewSet = [...new Set(reviewQuarantine)];
 
-  const lastBySeed = latestStatuses(rows);
-  const lastGenerationBySeed = latestGenerations(rows);
-  const generationStatusCounts = countOf([...lastGenerationBySeed.values()].map((r) => r.status ?? "unknown"));
+  // QC status counts and per-check counts.
+  const qcStatusCounts = countOf(frames.map((f) => f.qcStatus ?? "unknown"));
+  const checkCounts: Record<string, Record<string, number>> = {};
+  const checkNames = ["decode", "dimensions", "blank", "luminance", "aspect", "duplicate_exact", "duplicate_perceptual", "face_presence"];
+  for (const name of checkNames) checkCounts[name] = { pass: 0, warn: 0, fail: 0, not_run: 0 };
+  for (const row of rows) {
+    if (row.qc?.checks) {
+      for (const name of checkNames) {
+        const state = (row.qc.checks as Record<string, string>)[name];
+        if (state && checkCounts[name][state] !== undefined) checkCounts[name][state]++;
+      }
+    }
+  }
 
-  const accepted = frames.length;
-  const rejectedSeeds = [...lastBySeed.values()].filter((r) => r.review === "rejected").length;
-  const reviewStatusCounts = {
-    accepted_frames: accepted,
-    rejected_seeds: rejectedSeeds,
-  };
-
-  const providerCounts = countOf(frames.map((f) => f.provider ?? "unknown"));
-  const modelCounts = countOf(frames.map((f) => f.model ?? "unknown"));
-  const sourceCounts = countOf(frames.map((f) => f.source ?? "unknown"));
-  const promptVersionCounts = countOf(frames.map((f) => f.version ?? "unknown"));
-  const manifestPromptVersionCounts = countOf(rows.map((r) => r.version ?? "unknown"));
-
-  const photographyCounts: Record<string, number> = {};
-  const genderCounts: Record<string, number> = {};
-  const primaryGroupCounts: Record<string, number> = {};
+  // Distributions.
+  const primaryGroupCounts = countOf(frames.map((f) => f.primaryGroup ?? "unknown"));
   const mixedCounts = { mixed: 0, single: 0 };
-  const skinBandCounts: Record<string, number> = {};
-  const eyeBandCounts: Record<string, number> = {};
-  const ageCounts: Record<string, number> = {};
-  const ageBandCounts: Record<string, number> = {};
-  const detailCountDist: Record<string, number> = {};
-  const cellCounts: Record<string, number> = {};
+  const photographyCounts = countOf(frames.map((f) => f.photographyProfile ?? "unknown"));
+  const providerCounts = countOf(frames.map((f) => (f.provider ?? "unknown")));
+  const modelCounts = countOf(frames.map((f) => (f.model ?? "unknown")));
 
-  const frameHashes: string[] = [];
-  const frameFingerprints: string[] = [];
-  const unreadableFrames: string[] = [];
-  const frameMetadataMissing: string[] = [];
-  const qcFlagCounts: Record<string, number> = {};
-  const frameResults: Array<{ seed: number; sha256: string; fingerprint: string; flags: string[] }> = [];
-
-  for (const frame of frames) {
-    if (
-      frame.version === "unknown" ||
-      frame.source === "unknown" ||
-      frame.provider === undefined ||
-      frame.prompt === "" ||
-      frame.model === undefined
-    ) {
-      frameMetadataMissing.push(String(frame.seed));
-    }
-
-    let buffer: Buffer;
-    try {
-      buffer = await toBuffer(folder.readFrame(frame.seed));
-    } catch {
-      unreadableFrames.push(String(frame.seed));
-      qcFlagCounts["decode_failed"] = (qcFlagCounts["decode_failed"] ?? 0) + 1;
-      continue;
-    }
-
-    const sha = createHash("sha256").update(buffer).digest("hex");
-    let result;
-    try {
-      result = await qc(buffer);
-    } catch {
-      unreadableFrames.push(String(frame.seed));
-      continue;
-    }
-
-    frameHashes.push(sha);
-    frameFingerprints.push(result.perceptual.hex);
-    frameResults.push({ seed: frame.seed, sha256: sha, fingerprint: result.perceptual.hex, flags: result.flags });
-
-    for (const flag of result.flags) qcFlagCounts[flag] = (qcFlagCounts[flag] ?? 0) + 1;
-
-    const sample = samplePortrait(frame.seed, salt);
-    const profileId = sample.photographyProfile.id;
-    photographyCounts[profileId] = (photographyCounts[profileId] ?? 0) + 1;
-
-    const gender = sample.values.gender ?? "unknown";
-    const primaryGroup = sample.groups[0] ?? "unknown";
-    const mixed = sample.groups.length > 1;
-    genderCounts[gender] = (genderCounts[gender] ?? 0) + 1;
-    primaryGroupCounts[primaryGroup] = (primaryGroupCounts[primaryGroup] ?? 0) + 1;
-    if (mixed) mixedCounts.mixed++; else mixedCounts.single++;
-    skinBandCounts[sample.bands.skin] = (skinBandCounts[sample.bands.skin] ?? 0) + 1;
-    eyeBandCounts[sample.bands.eye] = (eyeBandCounts[sample.bands.eye] ?? 0) + 1;
-    ageCounts[sample.values.age] = (ageCounts[sample.values.age] ?? 0) + 1;
-    const ageNum = Number(sample.values.age);
-    const ageBand = `${Math.floor(ageNum / 10) * 10}s`;
-    ageBandCounts[ageBand] = (ageBandCounts[ageBand] ?? 0) + 1;
-    const dc = String(sample.details.length);
-    detailCountDist[dc] = (detailCountDist[dc] ?? 0) + 1;
-
-    const cellKey = `${gender} x ${primaryGroup}`;
-    cellCounts[cellKey] = (cellCounts[cellKey] ?? 0) + 1;
+  // Missing provenance.
+  const missingByField: Record<string, number> = {};
+  const provenanceFields = ["version", "provider", "model", "source", "prompt", "primaryGroup", "photographyProfile", "templateHash", "samplerHash"];
+  for (const field of provenanceFields) {
+    const n = rows.filter((r) => (r as Record<string, unknown>)[field] === undefined).length;
+    if (n > 0) missingByField[field] = n;
   }
 
-  const exactDuplicateGroups: Array<{ hash: string; seeds: number[] }> = [];
+  // Legacy/interim counts.
+  const legacyCount = rows.filter((r) => r.origin === "legacy").length;
+  const interimCount = rows.filter((r) => r.origin === "interim").length;
+
+  // Integrity problems.
+  const integrity: string[] = [];
+  // missing files: frame row but no file
+  for (const row of rows) {
+    if (row.status === "ok") {
+      const p = join(dir, `${seedLabel(row.seed)}.png`);
+      if (!existsSync(p)) integrity.push(`Seed ${row.seed}: row says ok but Frame file is missing`);
+    }
+  }
+  // files with no row
+  const rowSeeds = new Set(rows.map((r) => r.seed));
+  for (const f of frames) {
+    if (!rowSeeds.has(f.seed)) integrity.push(`Seed ${f.seed}: Frame file exists but no manifest row`);
+  }
+  // malformed rows
+  for (const d of diagnostics) integrity.push(`line ${d.line}: malformed row (${d.message})`);
+  // hash mismatches
+  for (const row of rows) {
+    if (row.raw?.sha256) {
+      const rawPath = join(dir, "raw", `${seedLabel(row.seed)}.png`);
+      if (existsSync(rawPath)) {
+        const actual = sha256File(rawPath);
+        if (actual && actual !== row.raw.sha256) integrity.push(`Seed ${row.seed}: stored raw hash does not match file`);
+      }
+    }
+    if (row.normalized?.sha256) {
+      const normPath = join(dir, `${seedLabel(row.seed)}.png`);
+      if (existsSync(normPath)) {
+        const actual = sha256File(normPath);
+        if (actual && actual !== row.normalized.sha256) integrity.push(`Seed ${row.seed}: stored normalized hash does not match file`);
+      }
+    }
+  }
+  // quarantine paths
+  for (const row of rows) {
+    if (row.quarantine && "path" in (row.quarantine as object)) {
+      const p = (row.quarantine as { path: string }).path;
+      if (!existsSync(p)) integrity.push(`Seed ${row.seed}: quarantine path does not exist (${p})`);
+    }
+    if (row.quarantine && "frame" in (row.quarantine as object)) {
+      const q = row.quarantine as { frame: string; raw: string };
+      if (!existsSync(q.frame)) integrity.push(`Seed ${row.seed}: quarantined frame path does not exist`);
+      if (!existsSync(q.raw)) integrity.push(`Seed ${row.seed}: quarantined raw path does not exist`);
+    }
+  }
+  // unreadable images
+  for (const f of frames) {
+    const p = join(dir, `${seedLabel(f.seed)}.png`);
+    try {
+      await sharp(p).metadata();
+    } catch {
+      integrity.push(`Seed ${f.seed}: unreadable image`);
+    }
+  }
+
+  // Exact duplicates as groups.
   const hashToSeeds = new Map<string, number[]>();
-  for (const fr of frameResults) {
-    if (!hashToSeeds.has(fr.sha256)) hashToSeeds.set(fr.sha256, []);
-    hashToSeeds.get(fr.sha256)!.push(fr.seed);
+  for (const row of rows) {
+    if (row.raw?.sha256) {
+      if (!hashToSeeds.has(row.raw.sha256)) hashToSeeds.set(row.raw.sha256, []);
+      hashToSeeds.get(row.raw.sha256)!.push(row.seed);
+    }
   }
+  const exactDupGroups: { hash: string; seeds: number[] }[] = [];
   for (const [hash, seeds] of hashToSeeds) {
-    if (seeds.length > 1) exactDuplicateGroups.push({ hash, seeds: seeds.sort((a, b) => a - b) });
+    if (seeds.length > 1) exactDupGroups.push({ hash, seeds: [...new Set(seeds)].sort((a, b) => a - b) });
   }
-  exactDuplicateGroups.sort((a, b) => b.seeds.length - a.seeds.length || a.hash.localeCompare(b.hash));
+  exactDupGroups.sort((a, b) => a.hash.localeCompare(b.hash));
 
-  const nearDuplicateGroups: Array<{ representative: string; seeds: number[] }> = [];
-  const visited = new Set<number>();
-  const seedsList = frameResults.map((fr) => fr.seed);
-  for (let i = 0; i < frameResults.length; i++) {
-    if (visited.has(frameResults[i].seed)) continue;
-    const cluster: number[] = [frameResults[i].seed];
-    visited.add(frameResults[i].seed);
-    for (let j = i + 1; j < frameResults.length; j++) {
-      if (visited.has(frameResults[j].seed)) continue;
-      if (hammingDistance(frameResults[i].fingerprint, frameResults[j].fingerprint) <= PERCEPTUAL_FINGERPRINT_THRESHOLD) {
-        cluster.push(frameResults[j].seed);
-        visited.add(frameResults[j].seed);
-      }
-    }
-    if (cluster.length > 1) {
-      nearDuplicateGroups.push({
-        representative: frameResults[i].fingerprint,
-        seeds: cluster.sort((a, b) => a - b),
-      });
+  // Perceptual candidates as pairs (no clustering).
+  const perceptualPairs: { a: number; b: number; distance: number }[] = [];
+  const phashBySeed = new Map<number, { algo: string; hex: string }>();
+  for (const row of rows) {
+    if (row.qc?.perceptual?.hex) phashBySeed.set(row.seed, { algo: row.qc.perceptual.algo, hex: row.qc.perceptual.hex });
+  }
+  const seedList = [...phashBySeed.keys()].sort((a, b) => a - b);
+  for (let i = 0; i < seedList.length; i++) {
+    for (let j = i + 1; j < seedList.length; j++) {
+      const a = seedList[i], b = seedList[j];
+      const ha = phashBySeed.get(a)!, hb = phashBySeed.get(b)!;
+      const d = distanceBits({ algo: ha.algo, hex: ha.hex }, { algo: hb.algo, hex: hb.hex });
+      if (d !== null && d <= phashThreshold) perceptualPairs.push({ a, b, distance: d });
     }
   }
-  // Transitive closure: repeat clustering until stable
-  {
-    const clusters: number[][] = [];
-    const seen = new Set<number>();
-    for (let i = 0; i < frameResults.length; i++) {
-      if (seen.has(frameResults[i].seed)) continue;
-      const cluster = [frameResults[i].seed];
-      seen.add(frameResults[i].seed);
-      let changed = true;
-      while (changed) {
-        changed = false;
-        for (let k = 0; k < frameResults.length; k++) {
-          if (seen.has(frameResults[k].seed)) continue;
-          if (cluster.some((s) => hammingDistance(
-            frameResults[seedsList.indexOf(s)].fingerprint, frameResults[k].fingerprint) <= PERCEPTUAL_FINGERPRINT_THRESHOLD)) {
-            cluster.push(frameResults[k].seed);
-            seen.add(frameResults[k].seed);
-            changed = true;
-          }
-        }
-      }
-      clusters.push(cluster);
-    }
-    nearDuplicateGroups.length = 0;
-    for (const cluster of clusters) {
-      if (cluster.length > 1) {
-        nearDuplicateGroups.push({
-          representative: frameResults[seedsList.indexOf(cluster[0])].fingerprint,
-          seeds: cluster.sort((a, b) => a - b),
-        });
-      }
-    }
+  perceptualPairs.sort((x, y) => x.a - y.a || x.b - y.b);
+  const flaggedImages = new Set<number>();
+  for (const p of perceptualPairs) { flaggedImages.add(p.a); flaggedImages.add(p.b); }
+
+  // Distributions: primary group, mixed/single, gender, age band, skin, eye, photography, detail count, provider, model.
+  // Use persisted fields where available; legacy rows land in unknown.
+  const detailCountDist: Record<string, number> = {};
+  for (const row of rows) {
+    const dc = row.details ? String(row.details.length) : "unknown";
+    detailCountDist[dc] = (detailCountDist[dc] ?? 0) + 1;
   }
-  nearDuplicateGroups.sort((a, b) => b.seeds.length - a.seeds.length || a.seeds[0] - b.seeds[0]);
-
-  const lowCells = sortedEntries(cellCounts)
-    .filter(([, c]) => c < minCell)
-    .map(([key, count]) => ({ cell: key, count }));
-
-  const fieldCounts: Record<string, number> = {};
-  const rowFieldList = ["version", "provider", "model", "source", "file", "prompt", "error", "ts", "salt", "status"];
-  for (const field of rowFieldList) {
-    fieldCounts[field] = rows.filter((r) => (r as Record<string, unknown>)[field] !== undefined).length;
-  }
-
-  const legacyRows = rows.filter((r) => {
-    const o = r as Record<string, unknown>;
-    return o.provider === undefined || o.model === undefined || o.version === undefined || o.version !== currentVersion;
-  }).length;
 
   const result = {
+    auditVersion,
+    timestamp: reportTimestamp,
     dir,
     saltSet: salt !== "",
-    templateVersion: currentVersion,
-    manifestReadError: manifestError,
-    generationStatusCounts,
-    reviewStatusCounts,
-    acceptedFrames: accepted,
-    providerCounts,
-    modelCounts,
-    sourceCounts,
-    promptVersionCountsAccepted: promptVersionCounts,
-    promptVersionCountsManifest: manifestPromptVersionCounts,
-    photographyProfileCounts: photographyCounts,
-    demographicCounts: {
-      gender: genderCounts,
-      primaryEthnicityGroup: primaryGroupCounts,
+    saltMismatch: view.counter ? view.counter.salt !== salt && view.counter.salt !== "" : false,
+    templateVersion: view.version,
+    manifestReadError: view.counterError,
+    totals: {
+      manifestRows: rows.length,
+      manifestRowsByKind: countOf(rows.map((r) => (r.review !== undefined ? "review" : "generation"))),
+      manifestRowsBySchema: countOf(rows.map((r) => (r.schema ? String(r.schema) : "legacy"))),
+      framesInOutput: frames.length,
+      quarantineFiles: quarantineFiles.length,
+    },
+    generationOutcomes: genStatusCounts,
+    qcStatusCounts,
+    qcCheckCounts: checkCounts,
+    reviewCounts,
+    quarantineCounts: { ingestion: ingestSet.length, review: reviewSet.length },
+    exactDuplicates: exactDupGroups,
+    perceptualCandidates: {
+      pairs: perceptualPairs,
+      pairCount: perceptualPairs.length,
+      flaggedImageCount: flaggedImages.size,
+      threshold: phashThreshold,
+      algorithm: PHASH_ALGO,
+    },
+    distributions: {
+      primaryGroup: primaryGroupCounts,
       mixed: mixedCounts,
-      skinBand: skinBandCounts,
-      eyeBand: eyeBandCounts,
-      age: ageCounts,
-      ageBand: ageBandCounts,
-      optionalDetailCount: detailCountDist,
+      photographyProfile: photographyCounts,
+      provider: providerCounts,
+      model: modelCounts,
+      detailCount: detailCountDist,
     },
-    shares: {
-      gender: Object.fromEntries(Object.entries(genderCounts).map(([k, v]) => [k, v / Math.max(1, accepted)])),
-    },
-    missingMetadata: {
-      framesMissingProvenance: frameMetadataMissing,
-      frameCount: frameMetadataMissing.length,
-    },
-    unreadableFiles: unreadableFrames,
-    unreadableFileCount: unreadableFrames.length,
-    exactDuplicateGroups,
-    nearDuplicateGroups,
-    qcFlagCounts,
-    qcFlagTotal: Object.values(qcFlagCounts).reduce((a, b) => a + b, 0),
-    cellsWithTooFewExamples: {
-      threshold: minCell,
-      cells: lowCells,
-    },
-    legacyRowsAssessable: {
-      legacyRowCount: legacyRows,
-      fieldPresenceAcrossManifestRows: fieldCounts,
-      manifestRowCount: rows.length,
-      latestStatusRows: lastBySeed.size,
-    },
+    missingProvenance: missingByField,
+    legacyRowCount: legacyCount,
+    interimRowCount: interimCount,
+    integrityProblems: integrity,
+    diagnostics,
   };
+
+  // mixed counts: need persisted groups. Use rows.
+  for (const row of rows) {
+    if (row.groups && row.groups.length > 1) mixedCounts.mixed++;
+    else if (row.groups) mixedCounts.single++;
+  }
 
   if (json) {
     console.log(JSON.stringify(result, null, 2));
-    return;
+  } else {
+    console.log(`Dataset audit: ${dir}`);
+    console.log(`Audit version: ${auditVersion}`);
+    console.log(`Timestamp: ${reportTimestamp}`);
+    console.log(`Template version: ${view.version}`);
+    console.log(`Salt: ${salt ? "set" : "not set"}`);
+    if (view.counter && view.counter.salt && view.counter.salt !== salt) console.log(`Salt mismatch: folder started with a different salt (informational)`);
+    if (view.counterError) console.log(`Counter error: ${view.counterError}`);
+    console.log(`\nTotals`);
+    console.log(`  manifest rows: ${rows.length}`);
+    console.log(`  frames in out/: ${frames.length}`);
+    console.log(`  quarantine files: ${quarantineFiles.length}`);
+    console.log(`\nGeneration outcomes`);
+    for (const [k, v] of Object.entries(genStatusCounts).sort()) console.log(`  ${k}: ${v}`);
+    console.log(`\nQC status`);
+    for (const [k, v] of Object.entries(qcStatusCounts).sort()) console.log(`  ${k}: ${v}`);
+    console.log(`\nReview`);
+    console.log(`  unreviewed: ${reviewCounts.unreviewed}`);
+    console.log(`  accepted: ${reviewCounts.accepted}`);
+    console.log(`  rejected: ${reviewCounts.rejected}`);
+    console.log(`\nQuarantine`);
+    console.log(`  ingestion: ${ingestSet.length}`);
+    console.log(`  review: ${reviewSet.length}`);
+    console.log(`\nExact duplicates: ${exactDupGroups.length} groups`);
+    for (const g of exactDupGroups) console.log(`  ${g.seeds.map(seedLabel).join(", ")} (${g.hash.slice(0, 12)})`);
+    console.log(`\nPerceptual candidates: ${perceptualPairs.length} pairs, ${flaggedImages.size} images flagged, threshold ${phashThreshold}`);
+    for (const p of perceptualPairs) console.log(`  ${seedLabel(p.a)} - ${seedLabel(p.b)}: ${p.distance} bits`);
+    console.log(`\nPrimary group distribution`);
+    for (const [k, v] of Object.entries(primaryGroupCounts).sort()) console.log(`  ${k}: ${v}`);
+    console.log(`\nMissing provenance`);
+    for (const [k, v] of Object.entries(missingByField).sort()) console.log(`  ${k}: ${v}`);
+    console.log(`\nLegacy rows: ${legacyCount}, interim rows: ${interimCount}`);
+    console.log(`\nIntegrity problems: ${integrity.length}`);
+    for (const p of integrity) console.log(`  - ${p}`);
+    if (diagnostics.length) {
+      console.log(`\nMalformed rows: ${diagnostics.length}`);
+      for (const d of diagnostics) console.log(`  line ${d.line}: ${d.message}`);
+    }
   }
 
-  const printSection = (title: string) => {
-    console.log(`\n${title}`);
-    console.log("-".repeat(title.length));
-  };
-  const printCounts = (label: string, obj: Record<string, number>, total?: number) => {
-    console.log(label);
-    for (const [k, v] of sortedEntries(obj)) {
-      console.log(`  ${k}: ${v}${total !== undefined ? ` (${percent(v, total)})` : ""}`);
-    }
-  };
-
-  console.log(`Dataset audit: ${dir}`);
-  console.log(`Template version: ${currentVersion}`);
-  console.log(`Salt: ${salt ? "set" : "not set"}`);
-  if (manifestError) console.log(`Manifest read error: ${manifestError}`);
-
-  printSection("Counts by generation status (latest per seed)");
-  printCounts("status", generationStatusCounts, lastGenerationBySeed.size || undefined);
-
-  printSection("Counts by review status");
-  console.log(`  accepted frames: ${reviewStatusCounts.accepted_frames}`);
-  console.log(`  rejected seeds: ${reviewStatusCounts.rejected_seeds}`);
-
-  printSection("Counts by provider (accepted frames)");
-  printCounts("provider", providerCounts, accepted);
-
-  printSection("Counts by model (accepted frames)");
-  printCounts("model", modelCounts, accepted);
-
-  printSection("Counts by source (accepted frames)");
-  printCounts("source", sourceCounts, accepted);
-
-  printSection("Counts by prompt version (accepted frames)");
-  printCounts("version", promptVersionCounts, accepted);
-
-  printSection("Counts by prompt version (manifest rows)");
-  printCounts("version", manifestPromptVersionCounts, rows.length || undefined);
-
-  printSection("Counts by photography profile (accepted frames)");
-  printCounts("profile", photographyCounts, accepted);
-
-  printSection("Gender counts/shares");
-  printCounts("gender", genderCounts, accepted);
-
-  printSection("Primary ethnicity group counts/shares");
-  printCounts("group", primaryGroupCounts, accepted);
-
-  printSection("Mixed status counts");
-  console.log(`  mixed: ${mixedCounts.mixed} (${percent(mixedCounts.mixed, accepted)})`);
-  console.log(`  single: ${mixedCounts.single} (${percent(mixedCounts.single, accepted)})`);
-
-  printSection("Skin band counts/shares");
-  printCounts("skin band", skinBandCounts, accepted);
-
-  printSection("Eye band counts/shares");
-  printCounts("eye band", eyeBandCounts, accepted);
-
-  printSection("Age counts");
-  printCounts("age", ageCounts, accepted);
-
-  printSection("Age band counts");
-  printCounts("age band", ageBandCounts, accepted);
-
-  printSection("Optional detail count distribution");
-  printCounts("details", detailCountDist, accepted);
-
-  printSection("Missing/malformed metadata");
-  console.log(`  frames missing provenance: ${frameMetadataMissing.length}`);
-  if (frameMetadataMissing.length) console.log(`    seeds: ${frameMetadataMissing.join(", ")}`);
-  console.log(`  unreadable frame files: ${unreadableFrames.length}`);
-  if (unreadableFrames.length) console.log(`    seeds: ${unreadableFrames.join(", ")}`);
-
-  printSection("Exact duplicate hashes");
-  console.log(`  groups: ${exactDuplicateGroups.length}`);
-  for (const g of exactDuplicateGroups) console.log(`    ${g.seeds.map((s) => seedLabel(s)).join(", ")} (${g.hash.slice(0, 12)})`);
-
-  printSection("Likely near-duplicate groups");
-  console.log(`  groups: ${nearDuplicateGroups.length}`);
-  for (const g of nearDuplicateGroups) console.log(`    ${g.seeds.map((s) => seedLabel(s)).join(", ")}`);
-
-  printSection("QC flag counts");
-  if (Object.keys(qcFlagCounts).length === 0) console.log("  none");
-  for (const [k, v] of sortedEntries(qcFlagCounts)) console.log(`  ${k}: ${v}`);
-
-  printSection(`Cells with fewer than ${minCell} examples`);
-  if (lowCells.length === 0) console.log("  none");
-  for (const c of lowCells) console.log(`  ${c.cell}: ${c.count}`);
-
-  printSection("Legacy rows/fields assessable");
-  console.log(`  manifest rows: ${rows.length}`);
-  console.log(`  rows with missing/legacy fields: ${legacyRows}`);
-  for (const [k, v] of sortedEntries(fieldCounts)) console.log(`  field ${k}: ${v}/${rows.length}`);
+  process.exit(integrity.length > 0 ? 1 : 0);
 }
 
 run().catch((err) => {
   console.error(err instanceof Error ? err.stack ?? err.message : String(err));
-  process.exit(1);
+  process.exit(2);
 });
- (void 0);
