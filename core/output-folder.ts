@@ -224,7 +224,7 @@ export function readArchive(root: string): AuditView {
   let version = "unversioned";
   try {
     const rawTemplate = readFileSync("template.txt", "utf8");
-    version = rawTemplate.match(/^#\\s*(.+)\\n/)?.[1]?.trim() ?? "unversioned";
+    version = rawTemplate.match(/^#\s*(.+)\n/)?.[1]?.trim() ?? "unversioned";
   } catch {
     version = "unversioned";
   }
@@ -249,7 +249,7 @@ export function readArchive(root: string): AuditView {
   const rows: ManifestRow[] = [];
   const diagnostics: AuditRowDiagnostic[] = [];
   if (existsSync(manifestFile)) {
-    const lines = readFileSync(manifestFile, "utf8").split("\\n");
+    const lines = readFileSync(manifestFile, "utf8").split("\n");
     let lineNumber = 0;
     for (const line of lines) {
       lineNumber++;

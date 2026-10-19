@@ -31,6 +31,8 @@ import { runCliContract } from "./smoke-cli";
 import { runManifestChecks } from "./smoke-manifest";
 import { runStateChecks } from "./smoke-state";
 import { runDuplicateChecks } from "./smoke-duplicates";
+import { runPhase2Checks } from "./smoke-phase2";
+import { runPhase4Checks } from "./smoke-phase4";
 import "./smoke-classifiers";
 import {
   asyncCode, bad, captureOutput, check, errorCode, good, jobOf, promptFiles, refused, repoRoot, results, withGenerators,
@@ -62,6 +64,8 @@ await runManifestChecks();
 // their fixtures and clean them up.
 await runStateChecks();
 await runDuplicateChecks();
+await runPhase2Checks();
+await runPhase4Checks();
 
 // The five-digit Seed label is stated twice: the module owns it for
 // filenames and the command line, and the browser states it for display,
