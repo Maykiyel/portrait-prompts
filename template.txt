@@ -1,4 +1,4 @@
-# portrait-v7
+# portrait-v9
 Photorealistic portrait photograph of one fictional adult, a {gender} aged {age}, of {ethnicity} background, with {skin} skin. Their eyes are {eyeShape} and {eyeColor}; they have {face}, {nose}, {lips}, and {eyebrows}. They also have {hair}{facialHair}. Additional distinguishing details: {features}. Expression is {expression}. Head is {pose}. They work as {profession} and wear {wardrobe}.
 Photographic style and framing: {photography}.
 
