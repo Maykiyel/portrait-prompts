@@ -122,8 +122,12 @@ _Avoid_: version, template version
 The ordered list of values one placeholder draws from. Entries are only ever added at the end, because inserting or reordering changes what old Seeds produce.
 _Avoid_: options, choices, variants, list
 
+**Detection parity**:
+Equal detector error rates across demographic groups. The dataset sampling weights (ethnicity uniform per ethnicity, age uniform per decade) are designed to support detection parity for a deepfake detector trained on this dataset.
+_Avoid_: demographic balance, fairness
+
 **Ethnicity group**:
-One of eleven named groups of ethnicities, such as `europe` or `sub_saharan_africa`. A Portrait's ethnicity is chosen by picking a group with equal weight, then picking an ethnicity inside it, so small groups are not drowned out by large ones. Mixed portraits can carry two groups.
+One of eleven named groups of ethnicities, such as `europe` or `sub_saharan_africa`. A Portrait's ethnicity is chosen by picking a group with weight proportional to its list length, then picking an ethnicity inside it, so every one of the 57 ethnicities has equal probability. Mixed portraits can carry two groups.
 _Avoid_: ethnicity family, region
 
 **Primary group**:

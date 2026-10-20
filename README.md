@@ -145,7 +145,7 @@ Two rules keep your dataset consistent.
 - Add new pool entries at the end of a pool. Inserting or reordering entries moves existing entries. Even an append changes the prompt some old seeds produce, because the draw depends on the pool's length.
 - Bump the version tag in `template.txt` whenever you change the template or pools. The manifest then shows which prompt version made each image.
 
-Each pool holds 10 to 30 entries, except gender with 3 entries, ethnicity with 47 entries spread across 11 groups, and the new photography pool with 7 profiles. Pools that change the face matter most, because they decide who the person is. These are age, gender, ethnicity, skin, eye color, eye shape, face shape, nose, lips, eyebrows, hair, facial hair and the optional details. Wardrobe, background, lighting, pose and expression only change the surroundings and mood. Facial hair applies to men only, and its pool has several empty entries so about half of them are clean-shaven.
+Each pool holds 10 to 30 entries, except gender with 3 entries, ethnicity with 57 entries spread across 11 groups, age with 24 entries (18–88), and the photography pool with 7 profiles. Pools that change the face matter most, because they decide who the person is. These are age, gender, ethnicity, skin, eye color, eye shape, face shape, nose, lips, eyebrows, hair, facial hair and the optional details. Wardrobe, background, lighting, pose and expression only change the surroundings and mood. Facial hair applies to men only, and its pool has several empty entries so about half of them are clean-shaven.
 
 The optional details live in `detailPools` and fill the `{features}` placeholder. They are skin details, distinctive marks, facial details, accessories and age details. Each portrait gets zero to three of them, at most one per category, so a portrait can have freckles and glasses but never two accessories. With none selected the prompt says `no prominent additional marks or accessories`. A few rules keep the result coherent. Age details need an age of 30 or more, acne marks need 45 or less, freckles are skipped for freckled skin, and the asymmetry detail is skipped for asymmetrical lips. The details are drawn after all the pools, from the same seeded random source, so a seed and salt still give one prompt.
 
@@ -157,7 +157,9 @@ Gender is drawn with weights from `GENDER_WEIGHTS` in `core/sampler.ts`: man 48,
 
 ### Ethnicity groups
 
-An ethnicity is chosen in two steps. First a group is chosen with equal weight from 11 groups: europe, east_asia, southeast_asia, south_asia, central_asia, west_asia_north_africa, sub_saharan_africa, latin_america, caribbean, pacific, indigenous_americas. Then a specific ethnicity is chosen inside that group. Every group has the same weight, so smaller groups are not drowned out by larger ones. `ethnicityGroups` and `GROUP_WEIGHTS` hold this in `core/sampler.ts`.
+An ethnicity is chosen in two steps. First a group is chosen with weight proportional to its list length from 11 groups: europe (6), east_asia (5), southeast_asia (7), south_asia (5), central_asia (4), west_asia_north_africa (8), sub_saharan_africa (7), latin_america (4), caribbean (3), pacific (5), indigenous_americas (3). Then a specific ethnicity is chosen uniformly inside that group. This gives every one of the 57 ethnicities equal probability (~1.75% each). `ethnicityGroups` and `GROUP_WEIGHTS` hold this in `core/sampler.ts`.
+
+**Known approximations**: The 10 ethnicities added in v9 (Burmese, Khmer, Malay, Tibetan, Uyghur, Tajik, Amazigh, Armenian, Georgian, Aboriginal Australian) inherit their group's skin and eye tone band weights (`SKIN_BAND_WEIGHTS`, `EYE_BAND_WEIGHTS`) and light hair factors (`LIGHT_NATURAL_HAIR_FACTORS`). These are approximations; the bands were tuned for the original group members. Armenian, Georgian, and Aboriginal Australian are grouped with existing groups for band inheritance rather than having dedicated tables.
 
 ### Mixed blending
 
@@ -188,6 +190,21 @@ Some weights change how often a trait appears without forbidding it.
 ### Photography profiles and tuning
 
 Seven photography profiles make up the photography pool: professional headshot, casual smartphone, webcam portrait, environmental portrait, candid available light, low light portrait, and selfie. Each has equal base weight and an allowed-settings list for indoor, outdoor and studio settings. Low light portrait additionally allows or excludes specific lighting entries. The profile is drawn before background and lighting, so it can tune both. Profile descriptions go into the prompt through the `{photography}` placeholder.
+
+### Sampling weights
+
+The sampler uses the following weighting strategy to support detection parity across demographic groups:
+
+- **Ethnicity**: uniform per ethnicity. Each of the 57 ethnicities has equal probability. Groups are weighted by their list length (e.g., `sub_saharan_africa` has 7 ethnicities so its group weight is 7, `central_asia` has 4 so its weight is 4). This ensures no ethnicity is over- or under-represented by accident.
+- **Age**: uniform per age band. Seven bands (18–29, 30s, 40s, 50s, 60s, 70s, 80s) each get ~14.3% share. Within a band, entries are weighted evenly. Ages 18 and 19 land at ~2.4% each.
+- **Gender**: unchanged at 48/48/4 (man/woman/androgynous).
+- **Skin tone bands**: group-weighted as before (each group has its own band weights in `SKIN_BAND_WEIGHTS`).
+- **Eye tone bands**: group-weighted as before (each group has its own band weights in `EYE_BAND_WEIGHTS`).
+- **Labels are prompt intent, not verified attributes**: The ethnicity, age, gender, and other labels in the prompt are what was asked for, not ground-truth measurements of the resulting image.
+
+### Ages 18 and 19
+
+Generators can render ages 18 and 19 looking younger than 18. In review, reject any image that appears to show someone under 18. Use the existing review workflow described in ADR 0003. The manifest schema is unchanged; the age label remains what the sampler drew.
 
 ## Command line
 

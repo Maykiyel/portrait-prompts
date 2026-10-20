@@ -6,6 +6,7 @@ import sharp from "sharp";
 import { readArchive, seedLabel } from "../core/output-folder";
 import type { ManifestRow } from "../core/output-folder";
 import { distanceBits, perceptualHash, PHASH_ALGO, PHASH_THRESHOLD } from "../core/duplicates";
+import { ageBandOf } from "../core/sampler";
 
 function arg(name: string, fallback?: string): string | undefined {
   const i = process.argv.indexOf(name);
@@ -108,6 +109,20 @@ async function run() {
 
   // Distributions from persisted fields (generation rows only).
   const primaryGroupCounts = countOf(genRows.map((r) => r.primaryGroup ?? "unknown"));
+  
+  // Per-ethnicity distribution: split mixed ethnicities (e.g., "A and B") into components.
+  const ethnicityCounts: Record<string, number> = {};
+  for (const r of genRows) {
+    const eth = r.attributes?.ethnicity ?? "unknown";
+    if (eth === "unknown") {
+      ethnicityCounts.unknown = (ethnicityCounts.unknown ?? 0) + 1;
+    } else {
+      for (const part of eth.split(" and ")) {
+        ethnicityCounts[part] = (ethnicityCounts[part] ?? 0) + 1;
+      }
+    }
+  }
+  
   const mixedCounts = { mixed: 0, single: 0 };
   const photographyCounts = countOf(genRows.map((r) => r.photographyProfile ?? "unknown"));
   const providerCounts = countOf(genRows.map((r) => (r.provider ?? "unknown") as string));
@@ -115,8 +130,8 @@ async function run() {
   const genderCounts = countOf(genRows.map((r) => (r.attributes?.gender ?? "unknown")));
   const ageBandCounts: Record<string, number> = {};
   for (const r of genRows) {
-    const age = Number(r.attributes?.age);
-    const band = Number.isFinite(age) ? `${Math.floor(age / 10) * 10}s` : "unknown";
+    const age = r.attributes?.age;
+    const band = age ? ageBandOf(age) : "unknown";
     ageBandCounts[band] = (ageBandCounts[band] ?? 0) + 1;
   }
   const skinBandCounts = countOf(genRows.map((r) => (r.bands?.skin ?? "unknown")));
@@ -284,6 +299,7 @@ async function run() {
     },
     distributions: {
       primaryGroup: primaryGroupCounts,
+      ethnicity: ethnicityCounts,
       mixed: mixedCounts,
       gender: genderCounts,
       ageBand: ageBandCounts,
@@ -333,6 +349,8 @@ async function run() {
     for (const p of perceptualPairs) console.log(`  ${seedLabel(p.a)} - ${seedLabel(p.b)}: ${p.distance} bits`);
     console.log(`\nPrimary group distribution`);
     for (const [k, v] of Object.entries(primaryGroupCounts).sort()) console.log(`  ${k}: ${v}`);
+    console.log(`\nEthnicity distribution`);
+    for (const [k, v] of Object.entries(ethnicityCounts).sort()) console.log(`  ${k}: ${v}`);
     console.log(`\nMissing provenance`);
     for (const [k, v] of Object.entries(missingByField).sort()) console.log(`  ${k}: ${v}`);
     console.log(`\nLegacy rows: ${legacyCount}, interim rows: ${interimCount}`);
