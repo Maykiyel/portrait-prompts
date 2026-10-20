@@ -29,7 +29,7 @@ export function rngFor(seed: number, salt: string): () => number {
 // the template changes. Pools are drawn in the order they appear here, then the
 // optional details are drawn from the same random source.
 export const pools: Record<string, string[]> = {
-  age: ["21", "24", "27", "30", "33", "36", "39", "42", "45", "48", "52", "55", "58", "62", "65", "68", "72", "76"],
+  age: ["21", "24", "27", "30", "33", "36", "39", "42", "45", "48", "52", "55", "58", "62", "65", "68", "72", "76", "18", "19", "20", "80", "84", "88"],
   gender: ["man", "woman", "person with an androgynous look"],
   ethnicity: [
     "Nigerian", "Filipino", "Brazilian", "Korean", "Norwegian", "Iranian", "Mexican", "Indian",
@@ -38,6 +38,7 @@ export const pools: Record<string, string[]> = {
     "Chinese", "Greek", "Samoan", "Mongolian", "Moroccan", "Swedish",
     "Bangladeshi", "Sri Lankan", "Nepali", "Kazakh", "Uzbek", "Somali", "Zulu", "Cameroonian",
     "Jamaican", "Haitian", "Trinidadian", "Fijian", "Maori", "Native Hawaiian", "Navajo", "Quechua", "Cree",
+    "Burmese", "Khmer", "Malay", "Tibetan", "Uyghur", "Tajik", "Amazigh", "Armenian", "Georgian", "Aboriginal Australian",
   ],
   skin: [
     "deep brown", "dark espresso", "warm brown", "golden brown", "copper", "warm tan", "olive",
@@ -50,6 +51,7 @@ export const pools: Record<string, string[]> = {
   eyeShape: [
     "almond-shaped", "round", "hooded", "deep-set", "downturned", "upturned", "wide-set", "close-set",
     "monolid", "narrow", "large",
+    "heavy-lidded", "slightly drooping", "wide-open",
   ],
   face: [
     "a round face", "an oval face", "a square-jawed face", "a heart-shaped face", "a high-cheekboned face",
@@ -63,16 +65,19 @@ export const pools: Record<string, string[]> = {
     "a gently curved nose bridge", "a broad nose bridge with defined nostrils", "a slightly crooked nose",
     "a long straight nose", "a slightly upturned nose", "a wide nose with softly flared nostrils",
     "a small button nose",
+    "a narrow high-bridged nose with a pointed tip", "a nose with a wide base and a low bridge", "a long nose with a downturned tip",
   ],
   lips: [
     "thin lips", "full lips", "lips with a pronounced cupid's bow", "lips with a fuller lower lip",
     "a narrow upper lip with a full lower lip", "naturally asymmetrical lips", "softly defined lips",
     "wide lips", "small lips", "lips with a slight downturn at the corners",
+    "full lips with a soft cupid's bow", "a thin upper lip with a defined cupid's bow", "evenly full lips with a slight upturn",
   ],
   eyebrows: [
     "thick straight eyebrows", "softly arched eyebrows", "highly arched eyebrows", "sparse fine eyebrows",
     "bushy textured eyebrows", "subtle low-set eyebrows", "heavy dark eyebrows", "thin pale eyebrows",
     "angular eyebrows with a defined tail", "thick slightly uneven eyebrows",
+    "straight dark eyebrows with a soft tail", "full eyebrows with a gentle arch", "short thin straight eyebrows",
   ],
   hair: [
     "short black curls", "shoulder-length wavy auburn hair", "a gray buzz cut", "long braids",
@@ -82,6 +87,8 @@ export const pools: Record<string, string[]> = {
     "red curly hair", "long wavy dark hair", "a short pixie cut in platinum blond", "box braids",
     "a high ponytail of black hair", "thinning gray hair combed back", "dark hair in twists",
     "a faded undercut with black hair on top", "wispy white hair",
+    "shoulder-length locs", "short straight black hair", "short dark hair with a receding hairline",
+    "shoulder-length straight dark brown hair", "short natural coils", "a dark buzz cut",
   ],
   // Used for men only. Empty entries keep about half of them clean-shaven.
   facialHair: [
@@ -174,20 +181,25 @@ export const GENDER_WEIGHTS: Record<string, number> = {
 };
 
 // Ethnicity groups and weights.
+// Each group's weight equals its list length, so every one of the 57 ethnicities
+// has equal probability. This ensures detection parity across demographic groups
+// for the deepfake detector trained on this dataset.
 export const ethnicityGroups: Record<string, string[]> = {
   europe: ["Norwegian", "Polish", "Irish", "Italian", "Greek", "Swedish"],
-  east_asia: ["Korean", "Japanese", "Chinese", "Mongolian"],
-  southeast_asia: ["Filipino", "Vietnamese", "Indonesian", "Thai"],
+  east_asia: ["Korean", "Japanese", "Chinese", "Mongolian", "Tibetan"],
+  southeast_asia: ["Filipino", "Vietnamese", "Indonesian", "Thai", "Burmese", "Khmer", "Malay"],
   south_asia: ["Indian", "Pakistani", "Bangladeshi", "Sri Lankan", "Nepali"],
-  central_asia: ["Kazakh", "Uzbek"],
-  west_asia_north_africa: ["Iranian", "Lebanese", "Turkish", "Egyptian", "Moroccan"],
+  central_asia: ["Kazakh", "Uzbek", "Uyghur", "Tajik"],
+  west_asia_north_africa: ["Iranian", "Lebanese", "Turkish", "Egyptian", "Moroccan", "Amazigh", "Armenian", "Georgian"],
   sub_saharan_africa: ["Nigerian", "Ethiopian", "Kenyan", "Ghanaian", "Somali", "Zulu", "Cameroonian"],
   latin_america: ["Brazilian", "Mexican", "Colombian", "Peruvian"],
   caribbean: ["Jamaican", "Haitian", "Trinidadian"],
-  pacific: ["Samoan", "Fijian", "Maori", "Native Hawaiian"],
+  pacific: ["Samoan", "Fijian", "Maori", "Native Hawaiian", "Aboriginal Australian"],
   indigenous_americas: ["Navajo", "Quechua", "Cree"],
 };
-export const GROUP_WEIGHTS: Record<string, number> = Object.fromEntries(Object.keys(ethnicityGroups).map((g) => [g, 1]));
+export const GROUP_WEIGHTS: Record<string, number> = Object.fromEntries(
+  Object.entries(ethnicityGroups).map(([g, list]) => [g, list.length])
+);
 
 export function groupOf(ethnicity: string): string {
   for (const [group, list] of Object.entries(ethnicityGroups)) if (list.includes(ethnicity)) return group;
@@ -277,6 +289,7 @@ export const AGE_RULES: { pool: string; entry: string; minAge?: number; maxAge?:
   { pool: "hair", entry: "short gray waves", minAge: 52 },
   { pool: "hair", entry: "thinning gray hair combed back", minAge: 55 },
   { pool: "hair", entry: "wispy white hair", minAge: 62 },
+  { pool: "hair", entry: "short dark hair with a receding hairline", minAge: 30 },
   { pool: "facialHair", entry: ", a salt-and-pepper goatee", minAge: 42 },
   { pool: "facialHair", entry: ", a gray mustache", minAge: 52 },
   { pool: "facialHair", entry: ", a full dark beard", maxAge: 62 },
@@ -292,6 +305,36 @@ export const AGE_RULES: { pool: string; entry: string; minAge?: number; maxAge?:
   { pool: "profession", entry: "a retired pilot", minAge: 60 },
   { pool: "profession", entry: "a bike messenger", maxAge: 50 },
 ];
+
+/** Age bands for uniform sampling. Seven bands: 18-29, 30s, 40s, 50s, 60s, 70s, 80s. */
+export const AGE_BANDS = ["18-29", "30s", "40s", "50s", "60s", "70s", "80s"] as const;
+
+/** Returns the age band for a given age string (e.g., "18-29", "30s", "40s"). */
+export function ageBandOf(age: string): string {
+  const n = Number(age);
+  if (n >= 18 && n <= 29) return "18-29";
+  if (n >= 30 && n <= 39) return "30s";
+  if (n >= 40 && n <= 49) return "40s";
+  if (n >= 50 && n <= 59) return "50s";
+  if (n >= 60 && n <= 69) return "60s";
+  if (n >= 70 && n <= 79) return "70s";
+  if (n >= 80 && n <= 89) return "80s";
+  throw new Error(`Age out of supported range: ${age}`);
+}
+
+/**
+ * Weight function for age entries to make each age band equally likely.
+ * Each entry gets weight 1 / (number of entries in its band).
+ * Exported so tests can import it.
+ */
+export function ageBandWeight(entries: string[]): (entry: string) => number {
+  const counts: Record<string, number> = {};
+  for (const e of entries) {
+    const b = ageBandOf(e);
+    counts[b] = (counts[b] ?? 0) + 1;
+  }
+  return (entry: string) => 1 / (counts[ageBandOf(entry)] ?? 1);
+}
 
 export const GRAY_HAIR: string[] = [
   "short wavy salt-and-pepper hair",
@@ -712,6 +755,13 @@ export function samplePortrait(seed: number, salt: string, r: () => number = rng
       continue;
     }
 
+    if (k === "age") {
+      // Weight each entry by 1 / (number of entries in its band) so each band
+      // gets equal probability (~14.3%). Consumes exactly one r() call.
+      values.age = weightedPick(r, xs, ageBandWeight(xs));
+      continue;
+    }
+
     // Default generic pool.
     values[k] = weightedPick(r, xs, () => 1);
   }
@@ -799,6 +849,7 @@ export const SAMPLER_TABLES = {
   MIN_AGE_FOR_AGE_DETAIL,
   MAX_AGE_FOR_ACNE,
   PHOTOGRAPHY_PROFILES,
+  AGE_BANDS,
 };
 
 // Canonical JSON: object keys sorted, array order kept because pool order is part of
