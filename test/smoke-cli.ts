@@ -89,7 +89,7 @@ export async function runCliContract(): Promise<void> {
     promptsRun.code === 0 &&
       promptsRun.output === `Wrote 2 prompts to ${promptsFile} (${cliVersion}, seeds 3 to 4)\n` &&
       createHash("sha256").update(promptsHtml).digest("hex") ===
-        "ffccd92ff5fb7f136f9ef080e93e5b4975e6559d282c5fa4b5afa5bb3a3037f5" &&
+        "aca4743fa839e9acef305d6738e18a55947d0ea67330e9192ec82bcccc0369b8" &&
       promptsHtml.includes(`<b>00003</b>`) &&
       promptsHtml.includes(cliFolder.promptFor(4)),
   ));
