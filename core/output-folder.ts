@@ -212,6 +212,16 @@ export type AuditView = {
 };
 
 /**
+ * One of the two Prompt files, with Windows line endings turned into "\n". A
+ * checkout with `core.autocrlf` writes them as "\r\n", and read as is, the version
+ * line would not match, the tag would stay in every Prompt, "\r" would reach the
+ * vendor, and the template hash would differ between two machines holding the
+ * same text. Every reader of these files goes through here.
+ */
+export const readPromptFile = (name: "template.txt" | "negative.txt"): string =>
+  readFileSync(name, "utf8").replace(/\r\n?/g, "\n");
+
+/**
  * A read-only view of an archive, for reporting rather than for writing.
  *
  * It never asserts the salt and never creates a file, so an audit that runs over
@@ -223,7 +233,7 @@ export type AuditView = {
 export function readArchive(root: string): AuditView {
   let version = "unversioned";
   try {
-    const rawTemplate = readFileSync("template.txt", "utf8");
+    const rawTemplate = readPromptFile("template.txt");
     version = rawTemplate.match(/^#\s*(.+)\n/)?.[1]?.trim() ?? "unversioned";
   } catch {
     version = "unversioned";
@@ -346,10 +356,10 @@ const validateCount = (count: number) => {
  * its interface. The Prompt files are read at open time, not per Frame or Prompt.
  */
 export function openOutputFolder(root: string, salt: string): OutputFolder {
-  const rawTemplate = readFileSync("template.txt", "utf8");
+  const rawTemplate = readPromptFile("template.txt");
   const version = rawTemplate.match(/^#\s*(.+)\n/)?.[1]?.trim() ?? "unversioned";
   const template = rawTemplate.replace(/^#.*\n/, "");
-  const negative = readFileSync("negative.txt", "utf8").trim();
+  const negative = readPromptFile("negative.txt").trim();
   // The two fingerprints of the definitions this folder prompts from, hashed once
   // here and stamped on every row it writes. A reader can then tell which Prompt
   // text and which sampler tables built a Seed without trusting the version tag

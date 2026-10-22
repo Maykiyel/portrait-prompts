@@ -51,7 +51,7 @@ export const DEFAULT_PROVIDER = "gemini";
  * model, which is said out loud rather than answered with whichever model happens
  * to be first in the list.
  */
-const DEFAULT_MODELS: Record<string, string> = { gemini: "flash", openai: "flare" };
+const DEFAULT_MODELS: Record<string, string> = { gemini: "flash", openai: "flare", codex: "plan" };
 
 /** What a run is asked for when nothing about the Provider has been said. */
 const defaults = {

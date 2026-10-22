@@ -49,7 +49,7 @@ export function createApp(dataset: Dataset, registry: ProviderRegistry): Hono {
   });
 
   const api = new Hono();
-  api.get("/status", (c) => c.json(store.getStatus()));
+  api.get("/status", async (c) => c.json(await store.getStatus()));
   api.get("/prompts/pending", (c) => c.json(store.getPending(c.req.query("useNegative") === "1")));
   api.post("/prompts/new", async (c) => {
     const { count, useNegative } = await c.req.json<{ count: number; useNegative?: boolean }>();
@@ -120,7 +120,7 @@ export function createApp(dataset: Dataset, registry: ProviderRegistry): Hono {
 
   api.post("/generate", async (c) => {
     const req = await c.req.json<GenerateRequest>();
-    const refused = refusalFor(job.state(), registry, req);
+    const refused = await refusalFor(job.state(), registry, req);
     if (refused) return c.json({ error: refused.message }, refused.status);
     return c.json(job.start(req));
   });

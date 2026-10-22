@@ -1,9 +1,9 @@
 // The shared harness for the smoke test: the pass/check helper every
 // section reports through, and the fakes and observers every section
 // shares. No behaviour lives here.
-import { readFileSync } from "node:fs";
 import sharp from "sharp";
 import { ArchiveError, GenerationFailure } from "../core/errors";
+import { readPromptFile } from "../core/output-folder";
 import { providers, type ProviderRegistry } from "../core/providers";
 import type { Generator } from "../core/generate";
 import type { createApp } from "../server/index";
@@ -59,7 +59,14 @@ export const withGenerators = (swaps: Record<string, Generator>): ProviderRegist
   Object.fromEntries(
     Object.entries(providers).map(([id, provider]) => [
       id,
-      swaps[id] ? { ...provider, generate: swaps[id] } : provider,
+      {
+        ...provider,
+        ...(swaps[id] ? { generate: swaps[id] } : {}),
+        // A Provider that checks its own readiness does it by asking a real tool
+        // on this machine. The suite never asks: it answers not-ready, so no test
+        // starts that tool and no result depends on whether it is installed.
+        ...(provider.ready ? { ready: async () => ({ ok: false as const, message: "The suite never asks a real tool." }) } : {}),
+      },
     ]),
   );
 
@@ -138,6 +145,6 @@ export const settleJob = async (app: ReturnType<typeof createApp>): Promise<JobS
 
 /** The Prompt files, read relative to the working directory. */
 export const promptFiles = () => {
-  const raw = readFileSync("template.txt", "utf8");
+  const raw = readPromptFile("template.txt");
   return { version: raw.match(/^#\s*(.+)\n/)?.[1]?.trim() ?? "unversioned", template: raw.replace(/^#.*\n/, "") };
 };

@@ -1,5 +1,5 @@
 import { FrameQuarantined, namedSeeds, openOutputFolder } from "./output-folder";
-import { GenerationFailure } from "./errors";
+import { GenerationFailure, isStopping, type StoppingCode } from "./errors";
 
 /**
  * The seam the run stands on: something that turns a Prompt into image bytes.
@@ -8,6 +8,11 @@ import { GenerationFailure } from "./errors";
  * what it needs is stated here, and the vendor client implements it.
  */
 export type GenOptions = {
+  /**
+   * The Seed this image is for. A Generator never decides anything with it; it
+   * may name its own scratch files after it, and match them up in `afterAttempt`.
+   */
+  seed: number;
   model: string;
   aspectRatio: string;
   imageSize: string;
@@ -79,8 +84,29 @@ export type ClampEvent = {
   running: number;
 };
 
+/** Why a run halted before trying every Seed it claimed. */
+export type StopInfo = {
+  /**
+   * `usage-limit` and `signed-out` are what the Provider said about the account.
+   * `repeated-failure` is the run's own call, after the Provider's
+   * `stopAfterFailures` failures in a row.
+   */
+  reason: StoppingCode | "repeated-failure";
+  message: string;
+  /** When the vendor said a usage limit clears, as it wrote it. */
+  resetsAt?: string;
+};
+
+/**
+ * How the run reports that it is halting. Reported once, before the run returns,
+ * and only when it halts: the Seeds it never reached were claimed but not tried,
+ * so they stay waiting, and a caller that did not hear this would show a run that
+ * simply had fewer Seeds.
+ */
+export type StopEvent = { kind: "stop" } & StopInfo;
+
 /** Everything the run reports, in the order it happened. */
-export type ProgressEvent = StartEvent | ClampEvent | SeedEvent | PromptEvent;
+export type ProgressEvent = StartEvent | ClampEvent | SeedEvent | PromptEvent | StopEvent;
 
 /**
  * What one run was asked to do. Every value is concrete: the run never has to be
@@ -106,6 +132,19 @@ export type RunRequest = {
    * a ceiling for one.
    */
   maxConcurrency: number;
+  /**
+   * How many failures in a row halt the run. Absent means it tries every Seed it
+   * claimed. Handed in for the same reason as the ceiling: it is the Provider's.
+   */
+  stopAfterFailures?: number;
+  /**
+   * Called once each Seed's attempt is over, its Frame stored or its failure
+   * recorded, so a Provider can remove files of its own only after the archive
+   * holds what it needs. Never called for a dry run, which makes nothing.
+   */
+  afterAttempt?: (seed: number) => void;
+  /** The Provider's wrapper version, recorded in each row's `params`. Absent when it sends the Prompt alone. */
+  promptWrapper?: string;
   /**
    * Which Provider makes the Frames. Recorded in the Manifest beside the model,
    * which is the one place the run knows a Provider made anything at all: the
@@ -142,7 +181,13 @@ export type RunRequest = {
 };
 
 /** What a run came to, for the caller to render or refuse on. */
-export type RunResult = { done: number; failed: number; blocked: number };
+export type RunResult = {
+  done: number;
+  failed: number;
+  blocked: number;
+  /** Why it halted early. Absent when it tried every Seed it claimed. */
+  stopped?: StopInfo;
+};
 
 /**
  * Claims Seeds, generates Frames, records Attempts, and reports what happened.
@@ -192,13 +237,36 @@ export async function run(request: RunRequest): Promise<RunResult> {
   if (running < request.concurrency)
     report({ kind: "clamp", what: "concurrency", asked: request.concurrency, running });
 
+  // What every row this run writes says about how it asked, built once.
+  const params = {
+    aspectRatio: request.aspectRatio,
+    imageSize: request.imageSize,
+    useNegative: request.useNegative,
+    ...(request.promptWrapper ? { promptWrapper: request.promptWrapper } : {}),
+  };
+
   let done = 0;
   let failed = 0;
   let blocked = 0;
   let next = 0;
+  // Failures since the last Seed that landed or was refused. A refusal resets it,
+  // because a vendor that refuses a Prompt is answering, which is not the
+  // tool-has-stopped-working pattern this counts.
+  let inARow = 0;
+  let stopped: StopInfo | undefined;
+  const halt = (info: StopInfo) => {
+    // The first reason wins. A second worker failing the same way while the first
+    // was halting is the same halt, not a new one.
+    if (stopped) return;
+    stopped = info;
+    report({ kind: "stop", ...info });
+  };
+
+  // Read through a call so the loop sees a halt another worker made while this one was waiting.
+  const halted = () => stopped !== undefined;
 
   async function worker() {
-    while (next < todo.length) {
+    while (next < todo.length && !halted()) {
       const seed = todo[next++];
       // One sampling, asked for once, and everything the row about this Seed
       // comes from it: the Prompt that is sent and the attributes that are
@@ -211,6 +279,7 @@ export async function run(request: RunRequest): Promise<RunResult> {
           continue;
         }
         const buffer = await request.generate(sample.prompt, {
+          seed,
           model: request.model,
           aspectRatio: request.aspectRatio,
           imageSize: request.imageSize,
@@ -227,13 +296,10 @@ export async function run(request: RunRequest): Promise<RunResult> {
           provider: request.provider,
           model: request.model,
           attributesSource: "run",
-          params: {
-            aspectRatio: request.aspectRatio,
-            imageSize: request.imageSize,
-            useNegative: request.useNegative,
-          },
+          params,
         });
         done++;
+        inARow = 0;
         report({ kind: "seed", seed, ok: true, blocked: false });
       } catch (err) {
         // A Frame refused as it arrived is not a call that failed: the folder has
@@ -244,6 +310,7 @@ export async function run(request: RunRequest): Promise<RunResult> {
         if (err instanceof FrameQuarantined) {
           failed++;
           report({ kind: "seed", seed, ok: false, blocked: false, message: err.message });
+          countFailure(err.message);
           continue;
         }
         // A Provider reports a refusal as a code rather than as prose, so this
@@ -265,19 +332,36 @@ export async function run(request: RunRequest): Promise<RunResult> {
           provider: request.provider,
           model: request.model,
           attributesSource: "run",
-          params: {
-            aspectRatio: request.aspectRatio,
-            imageSize: request.imageSize,
-            useNegative: request.useNegative,
-          },
+          params,
           status: isBlocked ? "blocked" : "failed",
           error,
         });
         report({ kind: "seed", seed, ok: false, blocked: isBlocked, message: error });
+        // A failure about the account rather than the Seed ends the run here. The
+        // Seed itself was recorded as failed above, so it keeps waiting.
+        if (err instanceof GenerationFailure && isStopping(err.code)) {
+          halt({ reason: err.code, message: error, ...(err.resetsAt ? { resetsAt: err.resetsAt } : {}) });
+        } else if (isBlocked) {
+          inARow = 0;
+        } else {
+          countFailure(error);
+        }
+      } finally {
+        // After the row, whichever way it went: the Provider's own files go last.
+        if (!request.dryRun) request.afterAttempt?.(seed);
       }
     }
   }
 
+  function countFailure(message: string) {
+    inARow++;
+    if (request.stopAfterFailures !== undefined && inARow >= request.stopAfterFailures)
+      halt({
+        reason: "repeated-failure",
+        message: `${inARow} Seeds failed in a row. The last one said: ${message}`,
+      });
+  }
+
   await Promise.all(Array.from({ length: running }, worker));
-  return { done, failed, blocked };
+  return { done, failed, blocked, ...(stopped ? { stopped } : {}) };
 }

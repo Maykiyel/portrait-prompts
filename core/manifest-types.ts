@@ -111,7 +111,13 @@ export type SkinEyeBands = { skin: string; eye: string };
  * The request shape a Provider was asked for. `null` on a manual import, because
  * no Provider was asked for anything: the bytes came off a disk.
  */
-export type GenerationParams = { aspectRatio: string; imageSize: string; useNegative: boolean };
+export type GenerationParams = {
+  aspectRatio: string;
+  imageSize: string;
+  useNegative: boolean;
+  /** The version of the instruction the Provider wrapped the Prompt in. Absent when it sent the Prompt alone. */
+  promptWrapper?: string;
+};
 
 /** What one set of bytes hashes to, and how big and how shaped it was. */
 export type ImageDigest = { sha256: string; bytes: number; width: number; height: number };

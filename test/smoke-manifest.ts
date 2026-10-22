@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { run } from "../core/generate";
-import { openOutputFolder, seedLabel, type GenerationRow } from "../core/output-folder";
+import { openOutputFolder, readPromptFile, seedLabel, type GenerationRow } from "../core/output-folder";
 import { classifyRow } from "../core/manifest-reader";
 import {
   detailPools, EYE_BANDS, groupOf, pools, samplerHash, samplePortrait, SAMPLER_TABLES, SKIN_BANDS, templateHash,
@@ -118,7 +118,7 @@ export async function runManifestChecks(): Promise<void> {
   const SALT = "manifest-suite";
   try {
     process.chdir(repoRoot);
-    const TEMPLATE = readFileSync("template.txt", "utf8");
+    const TEMPLATE = readPromptFile("template.txt");
 
     // ---- What a generated row carries ----------------------------------------
     const generated = join(base, "generated");

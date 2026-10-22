@@ -106,8 +106,8 @@ export function Overview() {
         <dd>{s.saltSet ? "Set" : "Not set"}</dd>
         {s.providers.map((p) => (
           <Fragment key={p.id}>
-            <dt className="text-muted-foreground">{p.label} API key</dt>
-            <dd>{p.hasApiKey ? "Set" : "Not set"}</dd>
+            <dt className="text-muted-foreground">{p.needsKey ? `${p.label} API key` : p.label}</dt>
+            <dd>{p.needsKey ? (p.ready ? "Set" : "Not set") : p.ready ? "Ready" : "Not ready"}</dd>
           </Fragment>
         ))}
       </dl>

@@ -14,6 +14,7 @@ import { useRefreshAll } from "@/shared/lib/query-keys";
 import { useStatus } from "@/shared/lib/status-api";
 import { seedLabel } from "@/lib/text";
 import { useStartJob } from "./start-job";
+import { StoppedDialog } from "./stopped-dialog";
 
 export function Generate() {
   const status = useStatus();
@@ -31,6 +32,9 @@ export function Generate() {
   const [size, setSize] = useState<string | undefined>();
   const [concurrency, setConcurrency] = useState("3");
   const [useNegative, setUseNegative] = useState(true);
+  // The finish time of the stopped Job whose dialog was closed, so it does not
+  // open again on the next poll but does open for the next Job that stops.
+  const [dismissedStop, setDismissedStop] = useState<string | undefined>();
 
   // Before the first Status lands nothing is chosen, so the form waits for the
   // catalog rather than guessing at a default it would then have to correct.
@@ -59,7 +63,7 @@ export function Generate() {
   const c = Number(concurrency);
   const valid =
     Number.isInteger(n) && n >= 1 && n <= 500 && Number.isInteger(c) && c >= 1 && c <= maxConcurrency;
-  const noKey = provider ? !provider.hasApiKey : false;
+  const notReady = provider ? !provider.ready : false;
   const ready = Boolean(provider && chosenModel && chosenSize);
   const handled = state ? state.done + state.failed + state.blocked : 0;
   const percent = state && state.total > 0 ? Math.round((handled / state.total) * 100) : 0;
@@ -68,10 +72,20 @@ export function Generate() {
     <>
       <PageHeader
         title="Generate"
-        description="Make images through a vendor's API. This needs a paid key. Without one, use the Prompts and Import pages."
+        description="Make images through a vendor's API with a paid key, or through Codex on your ChatGPT plan. Without either, use the Prompts and Import pages."
       />
 
-      {noKey && provider && (
+      {notReady && provider && !provider.needsKey && (
+        <Alert variant="warning" className="mb-6">
+          <AlertCircle />
+          <AlertTitle>{provider.label} is not ready</AlertTitle>
+          <AlertDescription>
+            <p>{provider.notReady}</p>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {notReady && provider && provider.needsKey && (
         <Alert variant="warning" className="mb-6">
           <KeyRound />
           <AlertTitle>No API key for {provider.label}</AlertTitle>
@@ -111,6 +125,11 @@ export function Generate() {
               setProviderId(v);
               setModelKey(undefined);
               setSize(undefined);
+              // Keep the count of workers inside what the new Provider takes, so
+              // switching to one that makes an image at a time does not leave the
+              // form invalid with no visible reason.
+              const next = catalog.find((p) => p.id === v);
+              if (next && Number(concurrency) > next.maxConcurrency) setConcurrency(String(next.maxConcurrency));
             }}
           >
             <SelectTrigger id="provider">
@@ -120,7 +139,7 @@ export function Generate() {
               {catalog.map((p) => (
                 <SelectItem key={p.id} value={p.id}>
                   {p.label}
-                  {p.hasApiKey ? "" : " (no key)"}
+                  {p.ready ? "" : p.needsKey ? " (no key)" : " (not ready)"}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -188,17 +207,25 @@ export function Generate() {
         </div>
 
         <div>
-          <Button type="submit" disabled={!valid || !ready || noKey || running || start.isPending}>
+          <Button type="submit" disabled={!valid || !ready || notReady || running || start.isPending}>
             {running ? "Generating" : `Generate ${valid ? n : ""} images`}
           </Button>
         </div>
       </form>
 
+      {state?.stopped && (
+        <StoppedDialog
+          state={state}
+          open={!running && state.finishedAt !== undefined && state.finishedAt !== dismissedStop}
+          onClose={() => setDismissedStop(state.finishedAt)}
+        />
+      )}
+
       {state && state.status !== "idle" && (
         <section className="mt-8 max-w-xl">
           <div className="mb-2 flex items-baseline justify-between text-sm">
             <span className="font-medium">
-              {running ? "Generating" : state.status === "done" ? "Finished" : "Stopped"}
+              {running ? "Generating" : state.status === "done" && !state.stopped ? "Finished" : "Stopped"}
             </span>
             <span className="text-muted-foreground tabular-nums">
               {handled} of {state.total}

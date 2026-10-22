@@ -42,12 +42,42 @@ export type GenerationFailureCode =
    * call that came back empty is a render that lost the draw and the next run
    * may make, and this is a request no run will clear until it names another.
    */
-  | "unsupported-size";
+  | "unsupported-size"
+  /**
+   * The vendor reworded the Prompt before making the image. The image describes
+   * a different Portrait than the Seed names, so it is not filed, and the Seed
+   * keeps waiting.
+   */
+  | "prompt-altered"
+  /**
+   * The vendor made an image but did not say what text it made it from, so
+   * nothing can confirm the Seed's Prompt was the one used. Not filed, for the
+   * same reason as an altered Prompt: an unchecked image would be recorded as
+   * clean.
+   */
+  | "prompt-unverified"
+  /**
+   * The account has run out of images for now. Not a fact about this Seed, so
+   * the Seed keeps waiting, and every Seed after it would fail the same way: the
+   * run stops rather than spending the rest of the batch to find out.
+   */
+  | "usage-limit"
+  /** The vendor's tool is not signed in. The run stops for the same reason as a usage limit. */
+  | "signed-out";
+
+/** The codes that end a run: what failed is the account, not the Seed. */
+export const STOPPING_CODES = ["usage-limit", "signed-out"] as const;
+export type StoppingCode = (typeof STOPPING_CODES)[number];
+
+export const isStopping = (code: GenerationFailureCode): code is StoppingCode =>
+  (STOPPING_CODES as readonly string[]).includes(code);
 
 export class GenerationFailure extends Error {
   constructor(
     readonly code: GenerationFailureCode,
     message: string,
+    /** When a usage limit says it clears, as the vendor wrote it. Absent when it did not say. */
+    readonly resetsAt?: string,
   ) {
     super(message);
     this.name = "GenerationFailure";

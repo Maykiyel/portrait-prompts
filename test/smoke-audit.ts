@@ -117,6 +117,7 @@ export function runAudit(): void {
     "core/qc.ts": "decodes image bytes with sharp and computes deterministic quality checks",
     "core/duplicates.ts": "decodes image bytes with sharp and computes the perceptual hash",
     "cli/dataset-audit.ts": "reads archive files to verify stored hashes",
+    "core/codex.ts": "reads the session log and the image Codex saved in its own home folder, and runs Codex in an empty temp folder",
   };
   const reachesForFilesystem = (s: string) => /from\s+"node:(?:fs|path)"|from\s+"sharp"/.test(s);
 
@@ -308,7 +309,7 @@ export function runAudit(): void {
   // as coverage, so adding a vendor here is part of adding one to the registry.
   const narrates = (sources: Map<string, string>, entry: string): string[] =>
     [entry, ...graphFrom(entry, sources)].filter((f) =>
-      /console\.|@google\/genai|\bfrom\s+["']openai(?:\/[^"']*)?["']/.test(code(textOf(sources, f))));
+      /console\.|@google\/genai|\bfrom\s+["']openai(?:\/[^"']*)?["']|\bfrom\s+["'](?:node:)?child_process["']/.test(code(textOf(sources, f))));
   const runGraph = graphFrom(RUN, sourceText);
   const narrators = narrates(sourceText, RUN);
   results.push(check(
@@ -335,10 +336,15 @@ export function runAudit(): void {
   vendorImport.set(RUN, `${textOf(sourceText, RUN)}\nimport { x } from "openai/resources/images";\n`);
   const vendorBare = new Map(sourceText);
   vendorBare.set(RUN, `${textOf(sourceText, RUN)}\nimport x from "@google/genai";\n`);
+  // Codex is a vendor reached by starting a process rather than through an SDK,
+  // so starting a process is what names it.
+  const vendorProcess = new Map(sourceText);
+  vendorProcess.set(RUN, `${textOf(sourceText, RUN)}\nimport { spawn } from "node:child_process";\n`);
   results.push(check(
     "the run's silence is not vacuous: a print in the run, or in a module it stands on, turns it red, and naming a vendor turns it red too",
     narrates(own, RUN).includes(RUN) && narrates(beneath, RUN).includes(OWNER) &&
       narrates(vendorImport, RUN).includes(RUN) && narrates(vendorBare, RUN).includes(RUN) &&
+      narrates(vendorProcess, RUN).includes(RUN) &&
       !narrators.includes(RUN) && !narrators.includes(OWNER),
   ));
 
