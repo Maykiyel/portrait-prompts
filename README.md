@@ -10,7 +10,8 @@ Each portrait is a fictional adult with randomized age, background, face, hair, 
 
 - Node 22.12 or newer.
 - npm, pnpm or yarn. Any of them works, and nothing in the repo depends on one. See [Package managers](#package-managers).
-- An API key for at least one provider, only for the paid API route. Gemini's image models have no free tier. OpenAI's need a card with at least $5 on it, and may ask you to verify your organisation first.
+- For the paid API route, an API key for Gemini or OpenAI. Gemini's image models have no free tier. OpenAI's need a card with at least $5 on it, and may ask you to verify your organisation first.
+- For the ChatGPT route, the Codex CLI signed in with a ChatGPT plan that includes image generation. No API key is involved. It was tested on ChatGPT Go. See [ChatGPT route with Codex](#chatgpt-route-with-codex).
 
 ## Package managers
 
@@ -43,6 +44,10 @@ Open http://127.0.0.1:3001. Before your first batch, open `.env` and set `SEED_S
 
 For development, run `npm run dev`. The app opens on http://127.0.0.1:5173 with hot reload, and it talks to the API on port 3001. Restart after editing `.env`.
 
+`npm start` does not reload code. After pulling changes, stop it with Ctrl+C, run `npm run build`, and start it again. Only one copy can hold port 3001, so a second `npm start` fails with `EADDRINUSE` while the first is still running.
+
+`template.txt` and `negative.txt` are read with their line endings normalised, and `.gitattributes` keeps every `.txt` file on LF, so a Windows checkout with `core.autocrlf` gives the same prompts and the same template hash as any other.
+
 The server listens on 127.0.0.1 only and has no login. Do not expose it to a network. Your API key stays on the server and never reaches the browser.
 
 ## Using the app
@@ -62,12 +67,47 @@ The server listens on 127.0.0.1 only and has no login. Do not expose it to a net
 2. Open **Generate**, pick a provider, a model, a size and a count, and start. Progress updates live.
 3. Failed seeds stay waiting and run first next time. A seed whose *prompt* a vendor refused outright is blocked instead: it will not be offered again, because retrying it would only be refused again.
 
+### ChatGPT route with Codex
+
+This route makes images on your ChatGPT plan with no API key and no copying. The app hands each prompt to OpenAI's [Codex CLI](https://developers.openai.com/codex/cli), Codex generates the image on your plan, and the app files it like any other Frame.
+
+Set it up once:
+
+1. Install the Codex CLI. On Windows, in PowerShell:
+   ```powershell
+   powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+   ```
+   On macOS or Linux, `npm install -g @openai/codex` works too.
+2. Open a **new** terminal, so it sees the PATH the installer changed, and sign in. Choose ChatGPT when the browser opens, not an API key:
+   ```bash
+   codex login
+   ```
+3. Check it. The line must say ChatGPT:
+   ```bash
+   codex login status
+   ```
+4. Start the app from that new terminal with `npm start`. If the app was already running, restart it.
+
+Then make images:
+
+1. Open **Generate** and pick **ChatGPT (Codex)**. It says "not ready" with the reason when Codex is missing or signed out.
+2. Run 1 image first. When it says Done, run the rest of the batch.
+
+What happens on each Seed:
+
+- Codex runs once per Seed, one at a time, in an empty temp folder. "At once" is fixed at 1.
+- The prompt goes to Codex inside a short instruction, and the app checks Codex's own log to confirm the image was made from the Seed's prompt exactly. An image made from reworded text is discarded and the Seed stays waiting. The instruction's version is recorded on each Manifest row as `params.promptWrapper`.
+- The Frame goes to `out/`, and the image exactly as ChatGPT sent it, C2PA credentials included, goes to `out/raw/`. After that, the app deletes the copies Codex kept in its own folder (`~/.codex/generated_images/<thread>/` and that thread's session log), so they do not pile up.
+- The run stops, and the page shows a dialog with the reason, when your plan hits its image limit, when Codex is signed out, or after three failures in a row. Seeds it did not reach stay waiting and run first next time.
+
+Codex never sees `OPENAI_API_KEY` or `CODEX_API_KEY`, so it can only use the plan it signed in with. How Codex reports the image (its session log and image folder) was measured on codex-cli 0.163.0. It is Codex's internal layout, not a published API, so a Codex update can change it; `core/codex.ts` is the one place to adjust.
+
 ### Pages
 
 - **Overview** shows progress, the next step and your latest images.
 - **Prompts** lists waiting prompts with copy buttons and a toggle for the "Avoid" line.
 - **Import** matches downloaded images to prompts.
-- **Generate** runs the chosen provider's API with a progress bar.
+- **Generate** runs the chosen provider, through its API or through Codex, with a progress bar.
 - **Gallery** is a contact sheet of every image, with detail, download and reject.
 
 ## Seed salt
@@ -113,7 +153,7 @@ Two hashes cover the bytes:
 
 `primaryGroup` is the group the first ethnicity draw chose. It is stored separately from `groups`, and `groups` keeps the order the ethnicities are named in, so a mixed Portrait that names its second ethnicity first still records the group the draw started from.
 
-The remaining fields: `params` is `{ aspectRatio, imageSize, useNegative }` on an api row and `null` on a manual one. `templateHash` and `samplerHash` are the first 12 hex characters of the sha256 of the template text and of the sampler's definition tables, so a reader can tell which text and which tables built a Frame. `qc` is the quality record below. `duplicates` is `{ algo, threshold, exact, perceptual, uncomparable }`: the algorithm and threshold used, the exact matches, the perceptual candidates, and any artifacts that could not be compared. `quarantine` holds the path and the reason for a Frame refused at ingestion.
+The remaining fields: `params` is `{ aspectRatio, imageSize, useNegative }` on an api row and `null` on a manual one, plus `promptWrapper` when the provider wrapped the prompt in an instruction of its own (Codex does). `templateHash` and `samplerHash` are the first 12 hex characters of the sha256 of the template text and of the sampler's definition tables, so a reader can tell which text and which tables built a Frame. `qc` is the quality record below. `duplicates` is `{ algo, threshold, exact, perceptual, uncomparable }`: the algorithm and threshold used, the exact matches, the perceptual candidates, and any artifacts that could not be compared. `quarantine` holds the path and the reason for a Frame refused at ingestion.
 
 An absent key means unknown. `null` means recorded as not applicable. The string `"unknown"` is never written.
 
@@ -222,19 +262,20 @@ Flags worth knowing.
 
 - `prompts` takes `--count` (default 20), `--start`, `--out`, `--dir` and `--no-negative`.
 - `import-images` takes `--in` (required), `--start`, `--out` and `--dry-run`. Files are matched to the oldest waiting seeds by download time. Run it with `--dry-run` first.
-- `generate` takes `--count` (default 10), `--provider gemini|openai`, `--model`, `--size`, `--aspect`, `--concurrency`, `--start`, `--out`, `--no-negative` and `--dry-run`. `--provider` and `--model` may come in either order.
+- `generate` takes `--count` (default 10), `--provider gemini|openai|codex`, `--model`, `--size`, `--aspect`, `--concurrency`, `--start`, `--out`, `--no-negative` and `--dry-run`. `--provider` and `--model` may come in either order.
 - `dataset-audit` takes `--dir` (default `out`), `--min-cell` (default 5) and `--json`. Use `pnpm run dataset-audit -- --dir out` for a plain-text report. A dry run is not needed, because the audit reads files only and moves nothing.
 - `--model` takes a key or the vendor's own model string, so both `--model flash` and `--model gemini-3.1-flash-image` work.
 - `--start N` names the Seeds by hand instead of following the counter. `generate` and `import-images` still record them, so the counter moves past them and the same Seed is never handed out twice. `prompts` only writes the HTML page, so it leaves the counter alone. A dry run never moves it.
 
 ### Providers
 
-Each provider owns its models, its key and its limits, so nothing above it needs to know which vendor it is talking to. Adding one is a new file, an entry in the registry in `core/providers.ts`, and, if it is to answer the no-flag defaults, a key in the default-model map in `core/policy.ts`. The vendor guard in `test/smoke-audit.ts` must then learn its name, because a guard that stops naming the moment it matters is no guard at all.
+Each provider owns its models, its key (or its own readiness check) and its limits, so nothing above it needs to know which vendor it is talking to. See `docs/adr/0004-a-provider-reports-readiness-not-only-a-key.md`. Adding one is a new file, an entry in the registry in `core/providers.ts`, and, if it is to answer the no-flag defaults, a key in the default-model map in `core/policy.ts`. The vendor guard in `test/smoke-audit.ts` must then learn its name, because a guard that stops naming the moment it matters is no guard at all.
 
 | | key | models | sizes | notes |
 | --- | --- | --- | --- | --- |
 | **Gemini** | `GEMINI_API_KEY` | `flash` (default), `lite`, `pro` | 1K, 2K, 4K | `lite` is 1K only. No free tier. |
 | **OpenAI** | `OPENAI_API_KEY` | `flare` (default), `sunburst` | 1K, 2K | No 4K and 2:3 only, so any other aspect ratio is refused before a request is made. See below. |
+| **ChatGPT (Codex)** | none, `codex login` | `plan` | 1K | Your ChatGPT plan picks the model. One image at a time, 2:3 only. Stops on a usage limit, a sign-out, or three failures in a row. |
 
 Gemini model ids are `gemini-3.1-flash-lite-image`, `gemini-3.1-flash-image` and `gemini-3-pro-image`. OpenAI's are `gpt-image-2.5-flare` and `gpt-image-2.5-sunburst`; `gpt-image-1` is deprecated and its shutdown is 23 October 2026.
 
@@ -273,9 +314,9 @@ A page's own actions stay in that page's folder, and anything more than one page
 - `web/src/lib/text.ts` is the browser's own Seed label. It cannot come from `core/output-folder.ts` without dragging the image library into the bundle, so the rule sits there and `test/smoke-audit.ts` holds it to one implementation.
 - `server/` is three modules: routes in `index.ts`, a thin client of the output folder in `store.ts`, API generation in `jobs.ts`. It reaches the core and the wire types and nothing else, and in particular nothing under `cli/`. `shared/api-types.ts` holds the wire types both sides use, and nothing else, because the browser imports from it and anything heavier would come along.
 - `cli/` is the four command-line entry points, `generate.ts`, `import-images.ts`, `export-prompts.ts` and `status.ts`. They are adapters and nothing more: each reaches the output folder through the core and stands on nothing else of ours.
-- `test/` is the offline suite, which needs no API key and no network: `smoke-test.ts` runs the pipeline with a fake Generator, `smoke-cli.ts` holds each command's own bytes, `smoke-audit.ts` holds the architectural claims — that nothing reaches `out/` except through `core/output-folder.ts`, that the command line and the server are adapters over the core and neither stands on the other, and that the browser's own layers only reach down — and the proof beside each one that it cannot pass vacuously. Four of those proofs plant a file and run oxlint over it, so each of the four lint rules guarding this layering is shown still able to fail, and `smoke-harness.ts` is the pass/fail helper they share.
+- `test/` is the offline suite, which needs no API key and no network: `smoke-test.ts` runs the pipeline with a fake Generator, `smoke-cli.ts` holds each command's own bytes, `smoke-audit.ts` holds the architectural claims — that nothing reaches `out/` except through `core/output-folder.ts`, that the command line and the server are adapters over the core and neither stands on the other, and that the browser's own layers only reach down — and the proof beside each one that it cannot pass vacuously. Four of those proofs plant a file and run oxlint over it, so each of the four lint rules guarding this layering is shown still able to fail, and `smoke-harness.ts` is the pass/fail helper they share. `smoke-codex.ts` drives the Codex provider against `fake-codex.mjs`, a stand-in that writes the same output and files the real Codex does, so no test runs the real `codex`.
 
-The Seed, Frame and Prompt rules live in the core, not in the folders. `core/output-folder.ts` is the only code that reads or writes `out/`, and it owns the folder layout, the Seed counter, the manifest, Prompt wording, and the Frame and Seed rules, all behind the one interface `openOutputFolder` returns. Its siblings are `core/sampler.ts`, which holds the attribute pools and takes the salt as an argument, `core/generate.ts`, which claims Seeds, generates Frames, records Attempts and reports progress as data without printing any of it, `core/providers.ts` and its `gemini.ts` and `openai.ts`, which between them describe every vendor and are reached only from the two composition roots, so the run is handed a Provider rather than reaching for one, `core/policy.ts`, which holds the default generation policy the command line and the browser both start from so they cannot drift apart, and `core/errors.ts`, the failure that carries a code rather than an HTTP status.
+The Seed, Frame and Prompt rules live in the core, not in the folders. `core/output-folder.ts` is the only code that reads or writes `out/`, and it owns the folder layout, the Seed counter, the manifest, Prompt wording, and the Frame and Seed rules, all behind the one interface `openOutputFolder` returns. Its siblings are `core/sampler.ts`, which holds the attribute pools and takes the salt as an argument, `core/generate.ts`, which claims Seeds, generates Frames, records Attempts and reports progress as data without printing any of it, `core/providers.ts` and its `gemini.ts`, `openai.ts` and `codex.ts`, which between them describe every vendor and are reached only from the two composition roots, so the run is handed a Provider rather than reaching for one, `core/policy.ts`, which holds the default generation policy the command line and the browser both start from so they cannot drift apart, and `core/errors.ts`, the failure that carries a code rather than an HTTP status.
 
 The root holds configuration and the two Prompt files, not code: `template.txt` and `negative.txt` are read from the working directory, so every command finds them wherever you run it, and `GLOSSARY.md` gives the vocabulary.
 
@@ -302,7 +343,10 @@ The audit CLI (`pnpm dataset-audit`) is read-only: it writes nothing, and the fo
 - **Generate says no API key.** That provider's key is not set. Add it to `.env` and restart the server; the other provider's key does not stand in for it.
 - **The wrong image sits next to a prompt on Import.** Downloads were out of order. Change the seed in that row's dropdown. Dropping a seed another row uses swaps the two.
 - **Images come out square.** The free Gemini app picks the size. Import crops them to 2:3 and flags them.
-- **Port 3001 is busy.** Set `PORT` in `.env` and update the proxy target in `vite.config.ts` if you use `npm run dev`.
+- **Port 3001 is busy (`EADDRINUSE`).** Another copy of the app is probably still running; stop it first. To use another port, set `PORT` in `.env` and update the proxy target in `vite.config.ts` if you use `npm run dev`.
+- **ChatGPT (Codex) says not ready.** The message says why. "Not installed" usually means the app was started from a terminal opened before Codex was installed; open a new one and restart the app. "Signed in with an API key" means run `codex logout`, then `codex login` and choose ChatGPT.
+- **Codex says it changed the prompt, or could not confirm it.** The image was discarded and the Seed stays waiting. One-off cases clear on the next run. If every Seed fails this way, the instruction in `core/codex.ts` needs adjusting; bump its version when you change it.
+- **A dialog says ChatGPT stopped giving images.** Your plan hit its limit. Waiting Seeds run first when you start again after the reset.
 
 ## Notes
 

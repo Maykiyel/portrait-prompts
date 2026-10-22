@@ -1,7 +1,7 @@
 import { openOutputFolder, type OutputFolder } from "../core/output-folder";
 import type { ReviewReason } from "../core/output-folder";
 import { ArchiveError } from "../core/errors";
-import { hasKey, maxConcurrencyFor, type ProviderRegistry } from "../core/providers";
+import { maxConcurrencyFor, readiness, type Provider, type ProviderRegistry } from "../core/providers";
 import type {
   ImageItem, ImportResult, PromptsResponse, ProviderInfo, SeedRecordItem, Status,
 } from "../shared/api-types";
@@ -14,12 +14,21 @@ import type {
  */
 export type Dataset = { outDir: string; salt: string };
 
+/**
+ * Whether a Provider can run, as the browser hears it: a boolean, the sentence
+ * when it cannot, and whether a key is what it is waiting on. Never the key.
+ */
+const readyInfo = async (provider: Provider): Promise<Pick<ProviderInfo, "ready" | "notReady" | "needsKey">> => {
+  const ready = await readiness(provider);
+  return { ready: ready.ok, needsKey: provider.keyVar !== null, ...(ready.ok ? {} : { notReady: ready.message }) };
+};
+
 /** The module's stream type, taken from the interface rather than from node:fs. */
 export type FrameStream = ReturnType<OutputFolder["readFrame"]>;
 
 /** Everything the routes ask of one dataset. The folder's location never leaves it. */
 export type Store = {
-  getStatus(): Status;
+  getStatus(): Promise<Status>;
   getPending(useNegative?: boolean): PromptsResponse;
   addPrompts(count: number, useNegative?: boolean): PromptsResponse;
   listImages(): ImageItem[];
@@ -49,21 +58,21 @@ export function createStore({ outDir, salt }: Dataset, registry: ProviderRegistr
    * Every Provider the registry knows, offered to the browser so it can draw the
    * same models and sizes the server would accept. The browser holds no list of
    * its own, so there is no second copy in the bundle to fall behind the server.
-   * A key is reported as present or absent and never as itself.
+   * Readiness is reported as a boolean and a sentence, and a key never as itself.
    */
-  const providerInfo = (): ProviderInfo[] =>
-    Object.values(registry).map((provider) => ({
+  const providerInfo = (): Promise<ProviderInfo[]> =>
+    Promise.all(Object.values(registry).map(async (provider) => ({
       id: provider.id,
       label: provider.label,
-      hasApiKey: hasKey(provider),
+      ...(await readyInfo(provider)),
       sizes: [...provider.sizes],
       models: provider.models.map(({ id, label, fixedSize }) => ({ id, label, fixedSize })),
       maxConcurrency: maxConcurrencyFor(provider),
-    }));
+    })));
 
-  const getStatus = (): Status => {
+  const getStatus = async (): Promise<Status> => {
     const { version, next, done, waiting, blocked, saltSet, problem } = archive().status();
-    return { version, next, done, waiting, blocked, saltSet, problem, providers: providerInfo() };
+    return { version, next, done, waiting, blocked, saltSet, problem, providers: await providerInfo() };
   };
 
   const promptsFor = (seeds: number[], useNegative: boolean): PromptsResponse =>

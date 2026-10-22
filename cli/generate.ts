@@ -1,6 +1,6 @@
 import "dotenv/config";
 import {
-  aspectFor, maxConcurrencyFor, providers, sizeFor, type ProviderRegistry,
+  aspectFor, providers, runPartsFor, sizeFor, type ProviderRegistry,
 } from "../core/providers";
 import {
   run, type ProgressEvent, type RunRequest, type RunResult,
@@ -73,6 +73,11 @@ export async function generateImages(
       // the wording to whoever is watching, and a person who asked for 100 at once
       // and got eight is owed the reason before the first Seed lands.
       console.log(`--concurrency ${event.asked} is more than this provider takes, so ${event.running} at a time.`);
+    } else if (event.kind === "stop") {
+      // On stderr, beside the failures that led to it, and before the summary,
+      // so the last thing a person reads is how many Seeds are still waiting.
+      const resets = event.resetsAt ? ` It clears ${event.resetsAt}.` : "";
+      console.error(`Stopped (${event.reason}): ${event.message}${resets}`);
     } else if (event.kind === "prompt") {
       console.log(`\n[${event.seed}] ${event.prompt}`);
     } else if (event.kind === "seed") {
@@ -91,11 +96,10 @@ export async function generateImages(
 
   const result = await run({
     ...options,
-    generate: provider.generate,
-    // The Provider's ceiling, handed to the run rather than applied here. The run
-    // owns the clamp and says when it has made one, and a second copy of that rule
-    // beside the flags is the copy that stops being true.
-    maxConcurrency: maxConcurrencyFor(provider),
+    // The Provider's generator, ceiling, halt rule, cleanup and wrapper, handed to
+    // the run rather than applied here. The run owns each rule and says when it
+    // used one, and a second copy beside the flags is the copy that stops being true.
+    ...runPartsFor(provider),
     onEvent: render,
   });
   // A dry run wrote nothing, so it has nothing to summarise.

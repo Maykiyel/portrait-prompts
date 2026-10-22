@@ -1,6 +1,6 @@
 import type { GenerateRequest, JobState } from "../shared/api-types";
 import {
-  aspectFor, hasKey, maxConcurrencyFor, modelOf, sizeFor, type ProviderRegistry,
+  aspectFor, modelOf, readiness, runPartsFor, sizeFor, type ProviderRegistry,
 } from "../core/providers";
 import { run } from "../core/generate";
 import { policyFor } from "../core/policy";
@@ -15,22 +15,22 @@ export type Refusal = { status: 400 | 409; message: string };
  * What the Job refuses, in the order it refuses it. Everything the module raises
  * arrives as a code instead.
  *
- * The Provider named by the request is asked all of it — does it exist, is its
- * key present, does it offer this model, can it make this size or this shape —
+ * The Provider named by the request is asked all of it — does it exist, can it
+ * run (for most, is its key present), does it offer this model, can it make this size or this shape —
  * because each of those is a fact about the vendor rather than about the run.
  * Nothing here knows what any vendor is called; a request for one that is not in
  * the registry is refused by name.
  */
-export function refusalFor(
+export async function refusalFor(
   current: JobState,
   registry: ProviderRegistry,
   req: GenerateRequest,
-): Refusal | undefined {
+): Promise<Refusal | undefined> {
   if (current.status === "running") return { status: 409, message: "A job is already running" };
   const provider = registry[req.provider];
   if (!provider) return { status: 400, message: `Unknown provider: ${req.provider}` };
-  if (!hasKey(provider))
-    return { status: 400, message: `${provider.keyVar} is not set. Add it to .env and restart the server.` };
+  const ready = await readiness(provider);
+  if (!ready.ok) return { status: 400, message: ready.message };
   if (!Number.isInteger(req.count) || req.count < 1 || req.count > 500)
     return { status: 400, message: "count must be a whole number from 1 to 500" };
   const model = modelOf(provider, req.model);
@@ -132,11 +132,10 @@ export function createJob({ outDir, salt }: Dataset, registry: ProviderRegistry)
       concurrency: req.concurrency,
       model: model.model,
       imageSize: plan.size,
-      maxConcurrency: maxConcurrencyFor(provider),
       useNegative: req.useNegative,
       outDir,
       salt,
-      generate: provider.generate,
+      ...runPartsFor(provider),
       onEvent: (event) => {
         // One branch per kind of event, the same dispatch `cli/generate.ts` makes:
         // `kind` is what says which event this is, never the presence or absence
@@ -151,6 +150,11 @@ export function createJob({ outDir, salt }: Dataset, registry: ProviderRegistry)
           current.notice =
             `Asked for ${event.asked} Frames at once, and this provider takes ` +
             `${event.running}, so ${event.running} run at a time.`;
+        } else if (event.kind === "stop") {
+          // Kept beside the counts like a clamp, and for the same reason: the
+          // browser has to hear why a run ended early, or a halt reads as a run
+          // that simply had fewer Seeds.
+          current.stopped = { reason: event.reason, message: event.message, ...(event.resetsAt ? { resetsAt: event.resetsAt } : {}) };
         } else if (event.kind === "seed") {
           // Three outcomes, because they are three things. A Seed made is done, a
           // Seed refused is finished, and a Seed that failed keeps waiting.

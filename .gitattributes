@@ -1,0 +1,2 @@
+# Prompt files are hashed and parsed line by line, so they stay LF on every checkout.
+*.txt text eol=lf

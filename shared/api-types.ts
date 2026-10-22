@@ -40,8 +40,12 @@ export type ProviderModelInfo = {
 export type ProviderInfo = {
   id: string;
   label: string;
-  /** Whether this Provider's key is present. Never the key itself. */
-  hasApiKey: boolean;
+  /** Whether this Provider can run now: its key is present, or it is signed in. Never the key itself. */
+  ready: boolean;
+  /** Why it cannot run, in a sentence. Present only when `ready` is false. */
+  notReady?: string;
+  /** Whether it runs on an API key, as opposed to a sign-in of its own. */
+  needsKey: boolean;
   /** The sizes this Provider can produce, smallest first. */
   sizes: string[];
   models: ProviderModelInfo[];
@@ -83,8 +87,21 @@ export type GenerateRequest = {
   useNegative: boolean;
 };
 
+/** Why a run ended before it had tried every Seed it claimed. */
+export type JobStop = {
+  reason: "usage-limit" | "signed-out" | "repeated-failure";
+  message: string;
+  /** When the vendor said a usage limit clears, as it wrote it. Absent when it did not say. */
+  resetsAt?: string;
+};
+
 export type JobState = {
   status: "idle" | "running" | "done" | "error";
+  /**
+   * Set when the run halted early. The Seeds it never reached stay waiting and
+   * are offered first next time. Absent when the run tried every Seed.
+   */
+  stopped?: JobStop;
   provider?: string;
   model?: string;
   total: number;

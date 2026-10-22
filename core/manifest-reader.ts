@@ -95,7 +95,12 @@ function asParams(value: unknown): GenerationParams | null | undefined {
   if (!isObject(value)) return undefined;
   return typeof value.aspectRatio === "string" && typeof value.imageSize === "string" &&
     typeof value.useNegative === "boolean"
-    ? { aspectRatio: value.aspectRatio, imageSize: value.imageSize, useNegative: value.useNegative }
+    ? {
+      aspectRatio: value.aspectRatio,
+      imageSize: value.imageSize,
+      useNegative: value.useNegative,
+      ...(typeof value.promptWrapper === "string" ? { promptWrapper: value.promptWrapper } : {}),
+    }
     : undefined;
 }
 

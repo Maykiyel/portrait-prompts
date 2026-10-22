@@ -5,6 +5,7 @@
 //
 // A check in the smoke suite fails if any vendor reaches the run, so adding one
 // here is the whole of what adding a vendor costs.
+import { codex } from "./codex";
 import { gemini } from "./gemini";
 import { openai } from "./openai";
 import type { Generator } from "./generate";
@@ -24,6 +25,9 @@ export type ProviderModel = {
   fixedSize: string | null;
 };
 
+/** Whether a Provider can run now, and when it cannot, the sentence that says why. */
+export type Readiness = { ok: true } | { ok: false; message: string };
+
 /**
  * Everything the app needs to know about one image vendor, and nothing it does
  * not: which models it offers, which environment variable holds its key, which
@@ -34,8 +38,40 @@ export type ProviderModel = {
 export type Provider = {
   id: string;
   label: string;
-  /** The environment variable that must be set. Named so a refusal can quote it. */
-  keyVar: string;
+  /**
+   * The environment variable that must be set. Named so a refusal can quote it.
+   * Null for a Provider that signs in some other way, which then says through
+   * `ready` whether it can run.
+   */
+  keyVar: string | null;
+  /**
+   * Whether it can run, for a Provider whose readiness is more than a key. Absent
+   * means the key decides. See ADR 0004.
+   */
+  ready?: () => Promise<Readiness>;
+  /**
+   * Called once the run is finished with a Seed's attempt: its Frame stored or its
+   * failure recorded. A Provider that leaves files of its own behind removes them
+   * here, after the archive holds what it needs. Absent when there is nothing to do.
+   */
+  afterAttempt?: (seed: number) => void;
+  /**
+   * The version of the instruction this Provider wraps every Prompt in, when it
+   * wraps one. Recorded on each Manifest row it writes, so a Frame can be traced
+   * to the exact text sent and not only to the Prompt inside it.
+   */
+  promptWrapper?: string;
+  /**
+   * The most Frames it will make at once, when that is a fact about the vendor
+   * rather than a rate. Absent means the per-minute limit decides.
+   */
+  maxConcurrency?: number;
+  /**
+   * How many failures in a row end a run. Absent means a run tries every Seed it
+   * claimed. Set by a Provider whose failures tend to repeat, such as a tool that
+   * has stopped working, so a batch does not spend itself proving it.
+   */
+  stopAfterFailures?: number;
   /** The image sizes this provider can produce, smallest first. */
   sizes: readonly string[];
   /**
@@ -60,7 +96,7 @@ export type Provider = {
  */
 export type ProviderRegistry = Record<string, Provider>;
 
-export const providers: ProviderRegistry = { gemini, openai };
+export const providers: ProviderRegistry = { gemini, openai, codex };
 
 /** The ceiling the run applies to any provider that does not name a tighter one. */
 export const MAX_CONCURRENCY = 8;
@@ -68,15 +104,30 @@ export const MAX_CONCURRENCY = 8;
 export const providerIds = (): string[] => Object.keys(providers);
 
 /**
- * Whether a key is present, never what it is. The browser asks this question and
- * gets a boolean; the key itself does not leave the server.
+ * Whether a Provider can run, never what its key is. A Provider with its own
+ * `ready` answers for itself; any other is ready when its key is present. The
+ * browser gets the answer and the sentence, and the key itself does not leave
+ * the server.
  */
-export const hasKey = (provider: Provider): boolean =>
-  Boolean(process.env[provider.keyVar]?.trim());
+export const readiness = async (provider: Provider): Promise<Readiness> => {
+  if (provider.ready) return provider.ready();
+  if (provider.keyVar === null) return { ok: true };
+  return process.env[provider.keyVar]?.trim()
+    ? { ok: true }
+    : { ok: false, message: `${provider.keyVar} is not set. Add it to .env and restart the server.` };
+};
 
-/** Every provider's key presence, for the Status a browser reads. */
-export const keyStatus = (): Record<string, boolean> =>
-  Object.fromEntries(Object.values(providers).map((p) => [p.id, hasKey(p)]));
+/**
+ * What the run takes from a Provider, gathered once so the two callers that start
+ * runs hand over the same facts and neither keeps a list that can fall behind.
+ */
+export const runPartsFor = (provider: Provider) => ({
+  generate: provider.generate,
+  maxConcurrency: maxConcurrencyFor(provider),
+  ...(provider.stopAfterFailures !== undefined ? { stopAfterFailures: provider.stopAfterFailures } : {}),
+  ...(provider.afterAttempt ? { afterAttempt: provider.afterAttempt } : {}),
+  ...(provider.promptWrapper ? { promptWrapper: provider.promptWrapper } : {}),
+});
 
 export const modelOf = (provider: Provider, id: string): ProviderModel | undefined =>
   provider.models.find((m) => m.id === id);
@@ -122,6 +173,8 @@ export const aspectFor = (provider: Provider, requested: string): AspectPlan => 
  * number instead of on an assumption.
  */
 export const maxConcurrencyFor = (provider: Provider): number =>
-  provider.imagesPerMinute === null
-    ? MAX_CONCURRENCY
-    : Math.min(MAX_CONCURRENCY, provider.imagesPerMinute);
+  Math.min(
+    MAX_CONCURRENCY,
+    provider.imagesPerMinute ?? MAX_CONCURRENCY,
+    provider.maxConcurrency ?? MAX_CONCURRENCY,
+  );

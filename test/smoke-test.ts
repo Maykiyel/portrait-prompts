@@ -17,7 +17,7 @@ import { MAX_CONCURRENCY, maxConcurrencyFor, providers, sizeFor } from "../core/
 import { policyFor } from "../core/policy";
 import { generateImages, parseArgs } from "../cli/generate";
 import { importImages } from "../cli/import-images";
-import { openOutputFolder, seedLabel, type FileForImport } from "../core/output-folder";
+import { openOutputFolder, readPromptFile, seedLabel, type FileForImport } from "../core/output-folder";
 import {
   buildPrompt, composePrompt, derivedPlaceholders, detailPools, formatDetails, MAX_DETAILS, MIX_RATE, NO_DETAILS, pools,
   samplePortrait,
@@ -33,6 +33,7 @@ import { runStateChecks } from "./smoke-state";
 import { runDuplicateChecks } from "./smoke-duplicates";
 import { runPhase2Checks } from "./smoke-phase2";
 import { runPhase4Checks } from "./smoke-phase4";
+import { runCodexChecks } from "./smoke-codex";
 import "./smoke-classifiers";
 import {
   asyncCode, bad, captureOutput, check, errorCode, good, jobOf, promptFiles, refused, repoRoot, results, withGenerators,
@@ -66,6 +67,7 @@ await runStateChecks();
 await runDuplicateChecks();
 await runPhase2Checks();
 await runPhase4Checks();
+await runCodexChecks();
 
 // The five-digit Seed label is stated twice: the module owns it for
 // filenames and the command line, and the browser states it for display,
@@ -647,7 +649,7 @@ results.push(check(
   "every prompt has the vertical 2:3 composition and a photography profile",
   anatomyPrompts.every(({ p }) => /Vertical 2:3 composition/.test(p) && /Photographic style and framing:/.test(p)),
 ));
-const negative = readFileSync("negative.txt", "utf8").trim();
+const negative = readPromptFile("negative.txt").trim();
 const negativeItems = negative.split(",").map((x) => x.trim());
 results.push(check("the negative list no longer excludes blur on its own", !negativeItems.includes("blur")));
 results.push(check(
@@ -845,10 +847,10 @@ try {
   ));
 
   const status = await api.request("/api/status");
-  const told = (await status.json()) as { next: number | null; waiting: number | null; done: number; saltSet: boolean; providers: { id: string; hasApiKey: boolean }[]; problem?: string };
+  const told = (await status.json()) as { next: number | null; waiting: number | null; done: number; saltSet: boolean; providers: { id: string; ready: boolean; needsKey: boolean }[]; problem?: string };
   results.push(check("the status route reports the folder and still says whether an API key is set",
     status.status === 200 && told.next === 4 && told.waiting === 2 && told.done === 1 &&
-    told.saltSet && told.providers.every((p) => p.hasApiKey === false) && told.problem === undefined));
+    told.saltSet && told.providers.filter((p) => p.needsKey).every((p) => p.ready === false) && told.problem === undefined));
 
   const listed = (await (await api.request("/api/images")).json()) as { seed: number; source: string; version: string; prompt: string }[];
   results.push(check("the Frame list comes back through the route with its provenance",
@@ -912,7 +914,7 @@ try {
   const noKey = await api.request("/api/generate", { method: "POST", body: JSON.stringify(request) });
   results.push(check("the Job refuses to start without an API key",
     noKey.status === 400 && ((await noKey.json()) as { error: string }).error.includes("GEMINI_API_KEY")));
-  const busy = refusalFor({ status: "running", total: 0, done: 0, failed: 0, blocked: 0, log: [] }, providers, request);
+  const busy = await refusalFor({ status: "running", total: 0, done: 0, failed: 0, blocked: 0, log: [] }, providers, request);
   results.push(check("the Job refuses to start while one is running",
     busy?.status === 409 && busy.message === "A job is already running"));
 
@@ -1025,7 +1027,8 @@ const asRun = (spy: ReturnType<typeof policySpy>) => ({
   pool: spy.calls.most,
   seeds: spy.seen.length,
 });
-const genOptions: (keyof GenOptions)[] = ["model", "aspectRatio", "imageSize"];
+// The Seed is left out: it is which image, not how to make one, so no policy states it.
+const genOptions: Exclude<keyof GenOptions, "seed">[] = ["model", "aspectRatio", "imageSize"];
 const policyBase = mkdtempSync(join(tempBase, "portrait-policy-"));
 writeFileSync(join(policyBase, "template.txt"), "# policy-v1\nPortrait of {age}.");
 writeFileSync(join(policyBase, "negative.txt"), "policy exclusions");
@@ -1310,9 +1313,9 @@ results.push(check(
 ));
 
 results.push(check(
-  "every Provider names the key it needs and offers only sizes it can make",
+  "every Provider names the key it needs, or says how it knows it is ready, and offers only sizes it can make",
   Object.values(providers).every((p) =>
-    p.keyVar.startsWith(p.id.toUpperCase()) && p.sizes.length > 0 &&
+    (p.keyVar === null ? p.ready !== undefined : p.keyVar.startsWith(p.id.toUpperCase())) && p.sizes.length > 0 &&
     p.models.every((m) => m.fixedSize === null || p.sizes.includes(m.fixedSize))) &&
     providers.openai.sizes.length < providers.gemini.sizes.length,
 ));
@@ -1385,13 +1388,14 @@ try {
   ));
 
   const openAiStatus = (await (await openAiApp.request("/api/status")).json()) as {
-    providers: { id: string; hasApiKey: boolean }[];
+    providers: { id: string; ready: boolean }[];
   };
   results.push(check(
-    "the status route offers every Provider with its key presence, never the key itself",
+    "the status route offers every Provider with its readiness, never the key itself",
     openAiStatus.providers.length === Object.keys(providers).length &&
-      openAiStatus.providers.every((p) => typeof p.hasApiKey === "boolean") &&
-      openAiStatus.providers.find((p) => p.id === "openai")?.hasApiKey === true,
+      openAiStatus.providers.every((p) => typeof p.ready === "boolean") &&
+      openAiStatus.providers.find((p) => p.id === "openai")?.ready === true &&
+      !JSON.stringify(openAiStatus).includes("a-key-the-fake-Generator-never-uses"),
   ));
 
   // A Provider the registry does not hold, and one whose key is not set. Both
